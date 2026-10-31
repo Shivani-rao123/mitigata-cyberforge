@@ -47,6 +47,21 @@ class ScopedExecutor(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def http_post(self, url: str, data: dict) -> dict:
+        """
+        Perform a single HTTP(S) POST of form-encoded `data` against
+        `url`, scope-checked the same way as http_get (including the
+        resolved-IP recheck). Returns {"status": int, "headers": dict,
+        "body": str}. Does NOT follow redirects automatically, for the
+        same reason http_get doesn't — a redirect target is a new URL
+        that needs its own scope check before anything follows it.
+        Added for FR-6 (verification/verifier.py): submitting a
+        candidate login form's fields is the one case this project
+        needs an active write request for, rather than a passive GET.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def crawl(self, base_url: str) -> list[dict]:
         """
         Crawl from `base_url`, staying on the same host, up to a small depth
@@ -112,6 +127,16 @@ def _bounded_get(url: str, timeout: int) -> requests.Response:
     directly (that would try to keep reading the live, possibly-huge
     stream)."""
     response = requests.get(url, timeout=timeout, allow_redirects=False, stream=True)
+    response._bounded_bytes = _read_capped(response, _MAX_RESPONSE_BYTES)
+    return response
+
+
+def _bounded_post(url: str, data: dict, timeout: int) -> requests.Response:
+    """POST `url` with `data` form-encoded, same streaming-and-capped
+    read discipline as _bounded_get — see that function's docstring for
+    why (an in-scope-but-malicious target could still serve an
+    oversized response to a POST)."""
+    response = requests.post(url, data=data, timeout=timeout, allow_redirects=False, stream=True)
     response._bounded_bytes = _read_capped(response, _MAX_RESPONSE_BYTES)
     return response
 
@@ -345,6 +370,19 @@ class RealScopedExecutor(ScopedExecutor):
         # side; the further [:50_000] char-level cap keeps evidence/report
         # text short even for a dense multi-byte-encoded response that
         # decodes to more characters than its byte count would suggest.
+        return {
+            "status": response.status_code,
+            "headers": dict(response.headers),
+            "body": _decoded_text(response)[:50_000],
+        }
+
+    def http_post(self, url: str, data: dict) -> dict:
+        self._guard_url(url)
+        try:
+            response = _bounded_post(url, data, self._http_timeout)
+        except requests.RequestException as exc:
+            return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
+
         return {
             "status": response.status_code,
             "headers": dict(response.headers),

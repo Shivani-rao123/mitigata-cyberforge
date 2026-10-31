@@ -41,6 +41,8 @@ class MockScopedExecutor(ScopedExecutor):
         scan_result: dict | None = None,
         http_result: dict | None = None,
         http_get_fn=None,
+        http_post_result: dict | None = None,
+        http_post_fn=None,
         crawl_result: list[dict] | None = None,
         crawl_js_result: dict | None = None,
         raise_on_crawl_js: Exception | None = None,
@@ -50,6 +52,8 @@ class MockScopedExecutor(ScopedExecutor):
         self._scan_result = scan_result
         self._http_result = http_result
         self._http_get_fn = http_get_fn
+        self._http_post_result = http_post_result
+        self._http_post_fn = http_post_fn
         self._crawl_result = crawl_result
         self._download_result = download_result
         self._raise_on_download = raise_on_download
@@ -81,6 +85,13 @@ class MockScopedExecutor(ScopedExecutor):
             return self._http_get_fn(url)
         if self._http_result is not None:
             return self._http_result
+        return {"status": 200, "headers": {}, "body": ""}
+
+    def http_post(self, url: str, data: dict) -> dict:
+        if self._http_post_fn is not None:
+            return self._http_post_fn(url, data)
+        if self._http_post_result is not None:
+            return self._http_post_result
         return {"status": 200, "headers": {}, "body": ""}
 
     def crawl(self, base_url: str) -> list[dict]:
