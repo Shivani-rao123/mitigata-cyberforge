@@ -7,29 +7,34 @@
 </head>
 <body>
   <header>
-    <h1>CART <span>/</span> Scan Results</h1>
-    <p>Target: <strong>{{ target }}</strong></p>
+    <div class="brand">
+      <div>
+        <h1><span class="prompt">$</span> CART<span class="hl">_</span>results</h1>
+        <p>Target: <strong>{{ target }}</strong></p>
+      </div>
+    </div>
+    <div class="status-pill"><span class="dot"></span> scan complete</div>
   </header>
 
   <main>
-    <a class="back-link" href="{{ url_for('index') }}">&larr; New scan</a>
+    <a class="back-link" href="{{ url_for('index') }}">&larr; new scan</a>
 
     <div class="scope-info" style="margin-top:16px;">
-      Authorized scope for this run: {{ chain.scope | join(', ') if chain.scope else '(none configured)' }}
+      authorized scope: {{ chain.scope | join(', ') if chain.scope else '(none configured)' }}
     </div>
 
     <div class="summary-row">
       <div class="stat">
         <div class="n">{{ chain.stages | length }}</div>
-        <div class="label">Agent stages run</div>
+        <div class="label">agent stages run</div>
       </div>
       <div class="stat">
         <div class="n">{{ chain.total_findings }}</div>
-        <div class="label">Total findings</div>
+        <div class="label">total findings</div>
       </div>
       <div class="stat">
         <div class="n">{{ chain.stages | selectattr('error') | list | length }}</div>
-        <div class="label">Stage errors</div>
+        <div class="label">stage errors</div>
       </div>
     </div>
 
@@ -48,7 +53,7 @@
         </div>
 
         {% if stage.error %}
-          <div class="stage-error">Error: {{ stage.error }}</div>
+          <div class="stage-error">[!] {{ stage.error }}</div>
         {% elif stage.result %}
           {% if stage.result.findings %}
             {% for finding in stage.result.findings %}
@@ -63,13 +68,13 @@
               </div>
             {% endfor %}
           {% else %}
-            <div class="no-findings">No findings at this stage.</div>
+            <div class="no-findings">no findings at this stage</div>
           {% endif %}
 
           {% if stage.agent == 'network' and stage.result.hosts %}
             <div style="margin-top:12px;" class="hint">
               {% for host in stage.result.hosts %}
-                <div>{{ host.ip }}{% if host.hostname %} ({{ host.hostname }}){% endif %} —
+                <div>{{ host.ip }}{% if host.hostname %} ({{ host.hostname }}){% endif %} &mdash;
                   {% for svc in host.services %}{{ svc.port }}/{{ svc.protocol }} {{ svc.service }}{% if not loop.last %}, {% endif %}{% endfor %}
                 </div>
               {% endfor %}
@@ -79,5 +84,7 @@
       </div>
     {% endfor %}
   </main>
+
+  <footer>CART // PTES-aligned // scope-enforced // built for Mitigata hackathon</footer>
 </body>
 </html>

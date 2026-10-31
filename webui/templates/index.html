@@ -7,8 +7,13 @@
 </head>
 <body>
   <header>
-    <h1>CART <span>/</span> Autonomous Multi-Agent Pentest Engine</h1>
-    <p>Give it a target. It scans, crawls, and analyzes — chaining network &rarr; web &rarr; binary automatically.</p>
+    <div class="brand">
+      <div>
+        <h1><span class="prompt">$</span> CART<span class="hl">_</span>engine</h1>
+        <p>Autonomous Multi-Agent Penetration Testing — network &rarr; web &rarr; binary, chained automatically.</p>
+      </div>
+    </div>
+    <div class="status-pill"><span class="dot"></span> system ready</div>
   </header>
 
   <main>
@@ -17,12 +22,13 @@
     {% endif %}
 
     <div class="panel">
+      <p class="panel-title">target acquisition</p>
       <form method="post" action="{{ url_for('scan') }}">
         <label for="target">Target</label>
         <input type="text" id="target" name="target" placeholder="127.0.0.1  or  krcbc.in  or  10.10.10.5" required>
         <div class="hint">An IP address or a hostname/domain — this is where the chain starts (network discovery).</div>
 
-        <label for="scope">Authorized scope (optional)</label>
+        <label for="scope">Authorized scope</label>
         <input type="text" id="scope" name="scope" placeholder="127.0.0.1/32, 10.10.10.0/24">
         <div class="hint">Comma-separated CIDR ranges for this run. Leave blank to fall back to config/scope.yaml.</div>
 
@@ -31,14 +37,16 @@
     </div>
 
     <div class="panel">
-      <strong>What this does:</strong>
-      <p class="hint" style="margin-top:10px; line-height:1.6;">
-        1. Runs the <strong>network agent</strong> against your target (nmap-based discovery).<br>
-        2. For every web service it finds, automatically runs the <strong>web agent</strong> (crawl, admin/login detection, reflected-input testing).<br>
-        3. For every downloadable binary the web agent finds, automatically runs the <strong>binary agent</strong> (hardcoded secrets, unsafe functions).<br><br>
-        Every step is scope-checked before it touches the network — a target outside your authorized scope is blocked, not scanned.
+      <p class="panel-title">pipeline</p>
+      <p class="hint" style="line-height:1.8; font-size:12px;">
+        <strong style="color:var(--accent)">01</strong> &nbsp;network agent &mdash; nmap-based host/port/service discovery<br>
+        <strong style="color:var(--low)">02</strong> &nbsp;web agent &mdash; auto-triggered per web service found: crawl, admin/login detection, reflected-input testing<br>
+        <strong style="color:var(--medium)">03</strong> &nbsp;binary agent &mdash; auto-triggered per downloadable binary found: hardcoded secrets, unsafe functions<br><br>
+        every step is scope-checked before it touches the network &mdash; a target outside your authorized scope is blocked, not scanned.
       </p>
     </div>
   </main>
+
+  <footer>CART // PTES-aligned // scope-enforced // built for Mitigata hackathon</footer>
 </body>
 </html>
