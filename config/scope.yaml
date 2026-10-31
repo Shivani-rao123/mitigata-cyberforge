@@ -1,0 +1,10 @@
+# config/scope.yaml
+#
+# Authorized targets. For local testing right now this is just your own
+# machine — safe to scan, always in scope. Replace with the real lab range
+# once the organizers give it to you at kickoff.
+
+targets:
+  - 127.0.0.1/32
+
+allowed_ports: [22, 80, 443, 631, 5432, 8080]
