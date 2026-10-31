@@ -35,6 +35,33 @@ def test_absolute_link_passed_through():
     assert links == ["http://other.example/x"]
 
 
+def test_html_escaped_ampersand_in_multi_param_href_is_decoded_before_joining():
+    """Real-world regression, confirmed against an actual TinyFileManager
+    target: a correctly-escaped multi-param href like
+    href="?p=&amp;view=secret.txt" must resolve to a query string of
+    "p=&view=secret.txt" (two params: p, view) — NOT
+    "p=&amp;view=secret.txt" (one garbled param named "amp;view"), which
+    is what a downstream app actually receives if the literal "&amp;"
+    is left in the URL. Confirmed server-side: parse_qs on an
+    un-unescaped join yields {"amp;view": [...]}, not {"p": [...],
+    "view": [...]} — the app never sees the "view" parameter it needs
+    and silently serves something else instead, with no error anywhere
+    to signal it."""
+    html = '<a href="?p=&amp;view=secret.txt">secret.txt</a>'
+    links = extract_links(html, "http://192.168.60.139/index.php?p=")
+    assert links == ["http://192.168.60.139/index.php?p=&view=secret.txt"]
+
+    from urllib.parse import parse_qs, urlparse
+
+    assert parse_qs(urlparse(links[0]).query) == {"view": ["secret.txt"]}
+
+
+def test_other_common_html_entities_in_hrefs_are_also_decoded():
+    html = '<a href="/search?q=a&amp;b=c&quot;&apos;&lt;&gt;">x</a>'
+    links = extract_links(html, "http://10.10.10.5/")
+    assert links == ['http://10.10.10.5/search?q=a&b=c"\'<>']
+
+
 def test_single_and_double_quoted_hrefs_both_match():
     html = "<a href='/a'>a</a><a href=\"/b\">b</a>"
     links = extract_links(html, "http://10.10.10.5/")
@@ -118,6 +145,12 @@ def test_empty_src_is_skipped():
     assert srcs == ["http://10.10.10.5/real.js"]
 
 
+def test_html_escaped_ampersand_in_script_src_is_decoded():
+    html = '<script src="/bundle.js?v=1&amp;cb=2"></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert srcs == ["http://10.10.10.5/bundle.js?v=1&cb=2"]
+
+
 def test_no_html_returns_empty_list_for_scripts():
     assert extract_script_srcs("", "http://10.10.10.5/") == []
 
@@ -149,6 +182,12 @@ def test_missing_action_defaults_to_empty_string():
     html = '<form method="get"><input name="q"></form>'
     forms = extract_forms(html)
     assert forms[0]["action"] == ""
+
+
+def test_html_escaped_ampersand_in_form_action_is_decoded():
+    html = '<form action="submit.php?step=1&amp;mode=x" method="post"></form>'
+    forms = extract_forms(html)
+    assert forms[0]["action"] == "submit.php?step=1&mode=x"
 
 
 def test_missing_method_defaults_to_get():

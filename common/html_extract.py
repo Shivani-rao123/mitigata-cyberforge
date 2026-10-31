@@ -22,6 +22,7 @@ rendering.
 
 from __future__ import annotations
 
+import html
 import re
 from urllib.parse import urljoin
 
@@ -66,18 +67,34 @@ MAX_INPUTS_PER_FORM = 200
 MAX_SCRIPTS_PER_PAGE = 50
 
 
-def extract_links(html: str, base_url: str) -> list[str]:
-    """Absolute URLs for every href in `html`, resolved against `base_url`.
-    Does not dedupe or filter by host — callers decide that. Bounded by
-    MAX_LINKS_PER_PAGE regardless of how many hrefs actually appear."""
-    if not html:
+def extract_links(html_text: str, base_url: str) -> list[str]:
+    """Absolute URLs for every href in `html_text`, resolved against
+    `base_url`. Does not dedupe or filter by host — callers decide that.
+    Bounded by MAX_LINKS_PER_PAGE regardless of how many hrefs actually
+    appear.
+
+    Every href is HTML-unescaped (html.unescape) before resolving. A
+    multi-param query string link is correctly written in HTML with its
+    "&" entity-escaped — e.g. href="?p=&amp;view=file.txt" — and without
+    unescaping, urljoin keeps that "&amp;" literal, so the resolved URL's
+    query string becomes "p=&amp;view=file.txt". A server parses that by
+    splitting on the real "&" between "amp;" and "view", producing an
+    "amp;view" parameter instead of "view" — the destination app never
+    sees the parameter it actually needs and silently serves something
+    else (its default page, usually), with no exception anywhere to
+    signal that anything went wrong. Confirmed against a real
+    TinyFileManager target: its own file/download links are written
+    exactly this way (?p=&amp;view=<file>), which is why a crawl could
+    discover a file's directory entry but never actually reach that
+    file's content."""
+    if not html_text:
         return []
 
     links: list[str] = []
-    for href in _HREF_RE.findall(html):
+    for href in _HREF_RE.findall(html_text):
         if len(links) >= MAX_LINKS_PER_PAGE:
             break
-        href = href.strip()
+        href = html.unescape(href.strip())
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
         try:
@@ -87,20 +104,24 @@ def extract_links(html: str, base_url: str) -> list[str]:
     return links
 
 
-def extract_script_srcs(html: str, base_url: str) -> list[str]:
-    """Absolute URLs for every <script src=...> in `html`, resolved
+def extract_script_srcs(html_text: str, base_url: str) -> list[str]:
+    """Absolute URLs for every <script src=...> in `html_text`, resolved
     against `base_url` — used to find JS bundles worth fetching and
     scanning for secrets/endpoints without a JS-aware crawler (see
     common/js_extract.py). Does not dedupe — callers decide that.
-    Bounded by MAX_SCRIPTS_PER_PAGE regardless of how many appear."""
-    if not html:
+    Bounded by MAX_SCRIPTS_PER_PAGE regardless of how many appear.
+
+    Each src is HTML-unescaped before resolving — same reasoning as
+    extract_links() above (a multi-param script src is rarer than a
+    multi-param href, but no less broken by skipping this)."""
+    if not html_text:
         return []
 
     srcs: list[str] = []
-    for src in _SCRIPT_SRC_RE.findall(html):
+    for src in _SCRIPT_SRC_RE.findall(html_text):
         if len(srcs) >= MAX_SCRIPTS_PER_PAGE:
             break
-        src = src.strip()
+        src = html.unescape(src.strip())
         if not src:
             continue
         try:
@@ -110,16 +131,22 @@ def extract_script_srcs(html: str, base_url: str) -> list[str]:
     return srcs
 
 
-def extract_forms(html: str) -> list[dict]:
+def extract_forms(html_text: str) -> list[dict]:
     """[{"action": str, "method": "get"|"post", "inputs": [str, ...]}, ...]
-    for every <form> in `html`. Missing action defaults to "" (caller
-    resolves against the page URL); missing/invalid method defaults to
-    "get" (the HTML spec's own default)."""
-    if not html:
+    for every <form> in `html_text`. Missing action defaults to ""
+    (caller resolves against the page URL); missing/invalid method
+    defaults to "get" (the HTML spec's own default).
+
+    `action` is HTML-unescaped before being returned — same reasoning
+    as extract_links()'s own unescaping: a form with a multi-param
+    action (action="submit.php?step=1&amp;mode=x") would otherwise reach
+    the caller's urljoin() with the "&amp;" still literal, mangling the
+    query string the same way an un-unescaped href does."""
+    if not html_text:
         return []
 
     forms: list[dict] = []
-    for open_tag, body in _FORM_RE.findall(html):
+    for open_tag, body in _FORM_RE.findall(html_text):
         if len(forms) >= MAX_FORMS_PER_PAGE:
             break
 
@@ -133,7 +160,7 @@ def extract_forms(html: str) -> list[dict]:
 
         forms.append(
             {
-                "action": action_match.group(1).strip() if action_match else "",
+                "action": html.unescape(action_match.group(1).strip()) if action_match else "",
                 "method": method,
                 "inputs": inputs,
             }
