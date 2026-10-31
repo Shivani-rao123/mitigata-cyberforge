@@ -1,0 +1,48 @@
+# docker-compose.yml
+#
+# One command to start the dashboard:
+#
+#     docker compose up --build
+#
+# Then open http://127.0.0.1:5500 — same dashboard, same agents, same
+# code as running `python webui/app.py` natively (see Dockerfile).
+#
+# For everything else this project can do (a single-agent CLI run, the
+# full pipeline + DB + report, the read-only FR-7 API), reuse this same
+# image instead of installing anything a second time:
+#
+#     docker compose run --rm cart python main.py --agent network --target 10.10.10.5 --scope 10.10.10.5/32
+#     docker compose run --rm cart python run_pipeline.py --target 10.10.10.5 --scope 10.10.10.5/32
+#     docker compose run --rm --service-ports -p 5001:5001 cart python -m api.app
+#
+# Networking note (see README.md for the full explanation): default
+# bridge networking here works for scanning anything on the same LAN
+# the Docker host is on. If your target network is only reachable
+# through a VPN client running on the HOST (common for a hackathon's
+# hidden lab network), bridge networking will not see that traffic —
+# on Linux, add --network host to the `run` command above instead
+# (Mac/Windows Docker Desktop has no equivalent; run main.py natively
+# for that specific case there).
+services:
+  cart:
+    build: .
+    ports:
+      - "5500:5500"
+    volumes:
+      # config/scope.yaml is how you give CART the organizers' real
+      # lab range at kickoff — mounted read-write so editing it on the
+      # host takes effect on the next `docker compose up`, no rebuild.
+      - ./config:/app/config
+      # store/cart.db (run_pipeline.py's persisted scan history) —
+      # survives a `docker compose down`/`up` instead of living only
+      # inside a throwaway container filesystem.
+      - ./store:/app/store
+    cap_add:
+      # nmap's default SYN scan needs raw-socket access. Docker's own
+      # default capability set already includes NET_RAW, so this is
+      # usually redundant — kept explicit anyway so a more locked-down
+      # host/runner that doesn't grant Docker's usual defaults still
+      # works, rather than nmap silently downgrading to a slower
+      # TCP-connect scan.
+      - NET_RAW
+      - NET_ADMIN

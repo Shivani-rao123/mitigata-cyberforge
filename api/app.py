@@ -36,4 +36,6 @@ def create_app(db: Database | None = None) -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+    # See webui/app.py's identical comment — 0.0.0.0 so this is
+    # reachable from outside a container too.
+    app.run(host="0.0.0.0", debug=True, port=5001)

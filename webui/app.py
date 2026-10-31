@@ -193,4 +193,10 @@ def scan():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5500, debug=True)
+    # 0.0.0.0, not 127.0.0.1: inside a container, binding to loopback
+    # only would make the dashboard unreachable from outside the
+    # container even with a published port (see Dockerfile/
+    # docker-compose.yml) — harmless to bind this way when run natively
+    # too, it just additionally accepts non-loopback connections on
+    # whatever interfaces this machine has.
+    app.run(host="0.0.0.0", port=5500, debug=True)
