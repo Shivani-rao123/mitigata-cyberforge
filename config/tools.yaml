@@ -1,0 +1,30 @@
+# config/tools.yaml
+#
+# Declares every external tool the engine can run. Adding a new tool means
+# adding an entry here (plus one parser in core/parsers/) — ScopedExecutor
+# and ToolEngine never need to change.
+#
+# `command` is a list of argv tokens. Placeholders in {curly_braces} are
+# filled in from the call's kwargs — never string-concatenated into a shell
+# string, so there is no shell-injection surface.
+
+tools:
+  nmap:
+    binary: nmap
+    command: ["nmap", "-sV", "-oX", "-", "{target}"]
+    # when allowed_ports is given, "-p {ports}" is inserted after the binary
+    ports_flag: ["-p", "{ports}"]
+    timeout_seconds: 300
+    output_format: xml
+    parser: core.parsers.nmap:parse
+
+  # Example of how a second network tool slots in later, with zero code
+  # changes to ScopedExecutor or ToolEngine — uncomment and point `network_tool`
+  # in config/scope.yaml at "naabu" to switch:
+  # naabu:
+  #   binary: naabu
+  #   command: ["naabu", "-host", "{target}", "-json", "-silent"]
+  #   ports_flag: ["-p", "{ports}"]
+  #   timeout_seconds: 120
+  #   output_format: json_lines
+  #   parser: core.parsers.naabu:parse

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This is a realistic nmap -sV -oX output structure, hand-built to match
+     real nmap's XML schema, used to verify our parser without needing nmap
+     installed. Real nmap output will have more metadata; our parser only
+     reads the fields below. -->
+<nmaprun scanner="nmap" args="nmap -sV -oX - -p 22,80,443,8080 10.10.10.5" start="1729000000" version="7.94">
+  <host>
+    <status state="up" reason="syn-ack" reason_ttl="64"/>
+    <address addr="10.10.10.5" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="lab-web01.internal" type="PTR"/>
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="ssh" product="OpenSSH" version="8.2p1 Ubuntu 4ubuntu0.5" method="probed" conf="10"/>
+      </port>
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="http" product="nginx" version="1.18.0" method="probed" conf="10"/>
+      </port>
+      <port protocol="tcp" portid="443">
+        <state state="closed" reason="reset" reason_ttl="64"/>
+      </port>
+      <port protocol="tcp" portid="8080">
+        <state state="filtered" reason="no-response" reason_ttl="0"/>
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="down" reason="no-response" reason_ttl="0"/>
+    <address addr="10.10.10.6" addrtype="ipv4"/>
+    <hostnames/>
+    <ports/>
+  </host>
+</nmaprun>
