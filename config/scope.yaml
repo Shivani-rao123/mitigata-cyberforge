@@ -5,6 +5,7 @@
 # once the organizers give it to you at kickoff.
 
 targets:
+  - 10.152.241.236/32
   - 127.0.0.1/32
 
-allowed_ports: [22, 80, 443, 631, 5432, 8080]
+allowed_ports: [22, 80, 443, 631, 5432, 8080,3000]
