@@ -69,3 +69,9 @@ class ScopeManager:
     @property
     def log_entries(self) -> list[tuple[str, bool]]:
         return list(self._log_entries)
+
+    @property
+    def authorized_networks(self) -> list[str]:
+        """The CIDR ranges currently in effect, as strings — for display
+        (e.g. the web dashboard showing what scope a run used)."""
+        return [str(network) for network in self._networks]
