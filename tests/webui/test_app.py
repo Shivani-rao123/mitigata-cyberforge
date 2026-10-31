@@ -1,15 +1,18 @@
 """
 tests/webui/test_app.py
 
-Unit tests for webui/app.py's Flask routes — specifically the index
-page's katana-availability wiring. Before this, the crawler dropdown
-always presented "katana only" as a normal, always-usable option even on
-a machine (like the grader's, per direct user feedback: "it mentions
-katana etc that is not present") that doesn't actually have katana
-installed. Uses ToolEngine.is_installed() (core/tool_engine.py) — a real
-PATH check, not just a tools.yaml config lookup — mocked here so the
-test doesn't depend on whether katana happens to be installed on
-whatever machine runs the suite.
+Unit tests for webui/app.py's Flask routes.
+
+The crawler dropdown (and all its katana-availability wording) was
+removed from the dashboard per direct user feedback ("remove that
+katana part in ui let it work in background") — crawler mode is no
+longer a user-facing choice at all; the form always implicitly asks
+for "auto" and the web agent decides for itself whether katana is
+usable this run, falling back silently (surfaced as a crawler_fallback
+finding, not UI chrome) if not. VALID_CRAWLER_MODES / the crawler
+param itself are UNCHANGED in app.py — only the dashboard stopped
+exposing them — so main.py/run_pipeline.py callers passing an explicit
+crawler mode are unaffected.
 """
 
 from unittest.mock import patch
@@ -23,33 +26,37 @@ def _get_index():
         return c.get("/").data.decode()
 
 
-def test_katana_option_is_enabled_and_unflagged_when_katana_is_installed():
-    with patch("webui.app.ToolEngine.is_installed", return_value=True):
-        html = _get_index()
-    assert "disabled" not in html
-    assert "not installed on this server" not in html
+def test_index_page_has_no_crawler_selector_or_katana_wording():
+    html = _get_index()
+    assert "katana" not in html.lower()
+    assert 'name="crawler"' not in html
 
 
-def test_katana_option_is_disabled_and_labeled_when_katana_is_not_installed():
-    with patch("webui.app.ToolEngine.is_installed", return_value=False):
-        html = _get_index()
-    assert 'value="katana" disabled' in html
-    assert "not installed on this server" in html
-    # the other two modes stay usable either way
-    assert 'value="auto" selected' in html
-    assert 'value="requests"' in html
-
-
-def test_scan_error_path_also_reflects_katana_availability():
-    # Hitting /scan with no target re-renders index.html with an error —
-    # that re-render must carry katana_installed too, not just the GET /
-    # happy path, or the dropdown would silently lose its disabled state
-    # on any validation error.
-    with patch("webui.app.ToolEngine.is_installed", return_value=False):
-        with app.test_client() as c:
-            html = c.post("/scan", data={"target": ""}).data.decode()
+def test_scan_error_path_also_has_no_crawler_or_katana_wording():
+    with app.test_client() as c:
+        html = c.post("/scan", data={"target": ""}).data.decode()
     assert "Target is required." in html
-    assert 'value="katana" disabled' in html
+    assert "katana" not in html.lower()
+    assert 'name="crawler"' not in html
+
+
+@patch("webui.app.run_target")
+def test_scan_without_a_crawler_field_still_defaults_to_auto_mode(mock_run_target):
+    """The dashboard form no longer sends a crawler field at all (the
+    dropdown is gone) — /scan's own request.form.get("crawler", "auto")
+    default must still carry the run, so the web agent's crawl
+    behavior doesn't silently change just because the UI stopped
+    asking the user to pick."""
+    from core.orchestrator import OrchestrationResult
+
+    mock_run_target.return_value = OrchestrationResult(target="127.0.0.1")
+
+    with app.test_client() as c:
+        c.post("/scan", data={"target": "127.0.0.1", "scope": "127.0.0.1/32"})
+
+    mock_run_target.assert_called_once()
+    _, kwargs = mock_run_target.call_args
+    assert kwargs["crawler"] == "auto"
 
 
 def test_scan_route_uses_the_fr4_concurrent_orchestrator_not_the_old_sequential_chain():

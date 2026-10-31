@@ -34,7 +34,6 @@ from flask import Flask, render_template, request
 
 from core.orchestrator import run_target
 from core.scoped_executor import RealScopedExecutor
-from core.tool_engine import ToolEngine
 from scope.manager import ScopeManager
 
 app = Flask(__name__)
@@ -133,17 +132,20 @@ def categorize_chain(chain) -> dict:
 
 @app.route("/", methods=["GET"])
 def index():
-    # Whether katana is ACTUALLY installed on this machine right now —
-    # not just configured in tools.yaml (every machine has that entry;
-    # far fewer have the binary). The form offers "katana only" as a
-    # crawler mode, and presenting that as a normal, always-available
-    # choice is misleading on a machine that doesn't have it installed —
-    # see ToolEngine.is_installed()'s docstring for the has_tool() vs
-    # is_installed() distinction this relies on.
-    katana_installed = ToolEngine().is_installed("katana")
-    return render_template("index.html", katana_installed=katana_installed)
+    return render_template("index.html")
 
 
+# Crawler mode is no longer a user-facing choice (see scan() below) — per
+# direct user feedback ("remove that katana part in ui let it work in
+# background"), the dashboard just always requests "auto" and the web
+# agent decides for itself whether katana is actually usable this run
+# (ToolEngine.is_installed() under the hood), falling back to the native
+# crawler silently if not — you'll see that as a crawler_fallback finding
+# if/when it happens, not as UI chrome about whether a binary is on PATH.
+# VALID_CRAWLER_MODES / the crawler param itself are kept (not removed)
+# so main.py, run_pipeline.py, and any future API caller can still pick
+# "requests" or "katana" explicitly — only the dashboard form stopped
+# exposing the choice.
 VALID_CRAWLER_MODES = ("auto", "requests", "katana")
 
 
@@ -152,15 +154,12 @@ def scan():
     target = request.form.get("target", "").strip()
     scope_raw = request.form.get("scope", "").strip()
     crawler = request.form.get("crawler", "auto").strip() or "auto"
-    katana_installed = ToolEngine().is_installed("katana")
 
     if not target:
-        return render_template("index.html", error="Target is required.", katana_installed=katana_installed)
+        return render_template("index.html", error="Target is required.")
 
     if crawler not in VALID_CRAWLER_MODES:
-        return render_template(
-            "index.html", error=f"Unknown crawler mode: {crawler!r}", katana_installed=katana_installed
-        )
+        return render_template("index.html", error=f"Unknown crawler mode: {crawler!r}")
 
     scope_cidrs = [c.strip() for c in scope_raw.split(",") if c.strip()] or None
 
@@ -186,9 +185,7 @@ def scan():
             crawler=crawler,
         )
     except Exception as exc:  # noqa: BLE001 — show it in the UI, not a stack trace
-        return render_template(
-            "index.html", error=f"Could not start scan: {exc}", katana_installed=katana_installed
-        )
+        return render_template("index.html", error=f"Could not start scan: {exc}")
 
     return render_template("results.html", chain=chain, target=target, categories=categorize_chain(chain))
 
