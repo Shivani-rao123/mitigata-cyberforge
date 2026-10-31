@@ -1,0 +1,13 @@
+# CART dependencies
+# Pinned to specific versions for reproducibility across machines.
+
+# --- used now, already verified ---
+pydantic==2.13.5       # common/contracts.py — Job, JobResult, Finding, etc.
+pytest==9.1.1           # test suite
+
+# --- needed soon, add as each piece is built ---
+pyyaml==6.0.2           # config/scope.yaml parsing
+requests==2.32.3        # web agent: http_get / crawl (FR-2)
+
+# --- needed once core's API exists ---
+flask==3.1.0            # api/routes.py (or swap for fastapi — partner's call)
