@@ -64,34 +64,71 @@ def severity_filter(finding_type: str) -> str:
     return FINDING_SEVERITY.get(finding_type, "medium")
 
 
-# Display-only ordering — doesn't change what's found or how, just the
-# order a stage's findings render in: real weaknesses first, operational
-# notes ("redirect_followed", "crawler_fallback", "open_port" — things
-# that describe what the crawl/scan did rather than something wrong)
-# last, instead of interleaved with whatever order the agent happened
-# to produce them in. A real TinyFileManager-style target can produce a
-# dozen redirect_followed notes for every one finding that actually
-# matters; without this, those notes bury the real findings.
+# Display-only ordering — doesn't change what's found or how, just how
+# findings are sorted within the "Issues" card: real weaknesses first,
+# high->low->info by severity (stable: same-severity findings keep
+# their original relative order).
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
-# "info"-severity findings that are purely operational commentary, not a
-# weakness of any kind — collapsed into their own closed-by-default
-# section in results.html (sort_findings still needs this split, so it
-# lives here rather than duplicated in the template).
-OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback", "open_port"}
+# categorize_chain() below buckets every finding, across every stage,
+# into one of four cards instead of the old per-stage flat list —
+# direct response to live feedback that "web part network open port
+# live hosts and services in scope endpoint flag common issue is
+# messed into one place": each of those is now its own sidebar entry
+# in results.html, built from these three buckets (anything not in
+# HOST_FINDING_TYPES/ENDPOINT_FINDING_TYPES/OPERATIONAL_NOTE_TYPES
+# falls into "issues", the catch-all for "common issue").
+
+# Discovered-port/host information — shown in the "Hosts & Open Ports"
+# card together with the raw host/service list from stage.result.hosts,
+# not buried in a collapsed operational-notes section like before.
+HOST_FINDING_TYPES = {"open_port"}
+
+# Attack-surface disclosure — things the web agent found exist, which
+# aren't themselves a proven weakness (that's what "Issues" is for) but
+# are exactly the "endpoint flag" category asked for separately.
+ENDPOINT_FINDING_TYPES = {"sensitive_endpoint_found", "js_endpoint_found", "directory_listing_enabled"}
+
+# Purely operational commentary about how the scan/crawl itself
+# behaved (a redirect was followed, a preferred tool fell back to a
+# narrower one) rather than a fact about the target's attack surface —
+# collapsed into its own closed-by-default card. A real TinyFileManager
+# -style target can produce a dozen redirect_followed notes for every
+# one finding that actually matters; without this split, those notes
+# bury everything else.
+OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback"}
 
 
-@app.template_filter("sort_findings")
-def sort_findings_filter(findings):
-    """Findings for one stage, split into (notable, operational) —
-    `notable` sorted high->low->info by severity (stable: same-severity
-    findings keep their original relative order), `operational` left in
-    original order since there's no severity signal worth sorting by
-    within a pile of redirect_followed notes."""
-    notable = [f for f in findings if f.finding_type not in OPERATIONAL_NOTE_TYPES]
-    operational = [f for f in findings if f.finding_type in OPERATIONAL_NOTE_TYPES]
-    notable.sort(key=lambda f: _SEVERITY_RANK.get(FINDING_SEVERITY.get(f.finding_type, "medium"), 1))
-    return notable, operational
+def categorize_chain(chain) -> dict:
+    """Buckets every finding across every stage of `chain` into the
+    four results.html cards, plus the raw discovered host/service list
+    (only network stages populate JobResult.hosts). Each bucketed entry
+    is {"finding": ..., "agent": ..., "target": ...} — the agent/target
+    are kept per-finding (not per-card) since a card now mixes findings
+    from however many stages contributed to it."""
+    live_hosts = []
+    buckets: dict[str, list[dict]] = {"hosts": [], "endpoints": [], "issues": [], "operational": []}
+
+    for stage in chain.stages:
+        if not stage.result:
+            continue
+        live_hosts.extend(stage.result.hosts)
+        for finding in stage.result.findings:
+            entry = {"finding": finding, "agent": stage.agent, "target": stage.target}
+            if finding.finding_type in OPERATIONAL_NOTE_TYPES:
+                buckets["operational"].append(entry)
+            elif finding.finding_type in HOST_FINDING_TYPES:
+                buckets["hosts"].append(entry)
+            elif finding.finding_type in ENDPOINT_FINDING_TYPES:
+                buckets["endpoints"].append(entry)
+            else:
+                buckets["issues"].append(entry)
+
+    buckets["issues"].sort(
+        key=lambda e: _SEVERITY_RANK.get(FINDING_SEVERITY.get(e["finding"].finding_type, "medium"), 1)
+    )
+
+    return {"live_hosts": live_hosts, **buckets}
 
 
 @app.route("/", methods=["GET"])
@@ -153,7 +190,7 @@ def scan():
             "index.html", error=f"Could not start scan: {exc}", katana_installed=katana_installed
         )
 
-    return render_template("results.html", chain=chain, target=target)
+    return render_template("results.html", chain=chain, target=target, categories=categorize_chain(chain))
 
 
 if __name__ == "__main__":

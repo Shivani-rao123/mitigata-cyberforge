@@ -14,7 +14,7 @@ whatever machine runs the suite.
 
 from unittest.mock import patch
 
-from common.contracts import Evidence, FindingOut, JobResult
+from common.contracts import Evidence, FindingOut, HostOut, JobResult, ServiceOut
 from webui.app import app
 
 
@@ -142,6 +142,117 @@ def test_results_page_surfaces_real_findings_above_collapsed_operational_notes()
     assert "<details" in html
     assert "12 operational notes" in html  # crawler_fallback + 11 redirect_followed
     assert html.index("missing_security_header") < html.index("<details")
+
+
+def test_results_page_splits_findings_into_separate_category_cards():
+    """UI regression for the follow-up feedback: "web part network open
+    port live hosts and services in scope endpoint flag common issue is
+    messed into one place" — open_port goes in the Hosts & Open Ports
+    card (with the live host/service list), sensitive_endpoint_found in
+    Endpoints, missing_security_header in Issues, and crawler_fallback/
+    redirect_followed stay collapsed in Operational notes — four
+    distinct cards, not one flat pile."""
+
+    def _finding(finding_type):
+        return FindingOut(
+            finding_type=finding_type, description=f"desc for {finding_type}", evidence=Evidence(kind="k", summary="s")
+        )
+
+    network_result = JobResult(
+        job_id="x",
+        status="completed",
+        hosts=[HostOut(ip="10.10.10.5", services=[ServiceOut(port=80, protocol="tcp", service="http")])],
+        findings=[_finding("open_port")],
+        follow_up_jobs=[{"agent": "web", "target": "10.10.10.5:80", "context": {}}],
+    )
+    web_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[
+            _finding("sensitive_endpoint_found"),
+            _finding("missing_security_header"),
+            _finding("crawler_fallback"),
+            _finding("redirect_followed"),
+        ],
+    )
+
+    with (
+        patch("core.orchestrator.run_network_agent", return_value=network_result),
+        patch("core.orchestrator.run_web_agent", return_value=web_result),
+    ):
+        with app.test_client() as c:
+            resp = c.post("/scan", data={"target": "10.10.10.5", "scope": "10.10.10.0/24"})
+
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert 'id="hosts"' in html and 'id="endpoints"' in html and 'id="issues"' in html and 'id="operational"' in html
+
+    hosts_card = html[html.index('id="hosts"') : html.index('id="endpoints"')]
+    endpoints_card = html[html.index('id="endpoints"') : html.index('id="issues"')]
+    issues_card = html[html.index('id="issues"') : html.index('id="operational"')]
+    operational_card = html[html.index('id="operational"') :]
+
+    assert "10.10.10.5" in hosts_card and "open_port" in hosts_card
+    assert "sensitive_endpoint_found" in endpoints_card
+    assert "missing_security_header" in issues_card
+    assert "crawler_fallback" in operational_card and "redirect_followed" in operational_card
+    # none of the other three cards leak findings that belong elsewhere
+    assert "sensitive_endpoint_found" not in hosts_card and "missing_security_header" not in hosts_card
+    assert "open_port" not in issues_card and "missing_security_header" not in endpoints_card
+
+
+def test_categorize_chain_buckets_findings_by_category_not_by_stage():
+    from webui.app import categorize_chain
+
+    def _finding(finding_type):
+        return FindingOut(
+            finding_type=finding_type, description="d", evidence=Evidence(kind="k", summary="s")
+        )
+
+    class _Stage:
+        def __init__(self, agent, target, result):
+            self.agent = agent
+            self.target = target
+            self.result = result
+            self.error = None
+
+    class _Chain:
+        def __init__(self, stages):
+            self.stages = stages
+
+    stages = [
+        _Stage(
+            "network",
+            "10.10.10.5",
+            JobResult(
+                job_id="x",
+                status="completed",
+                hosts=[HostOut(ip="10.10.10.5")],
+                findings=[_finding("open_port")],
+            ),
+        ),
+        _Stage(
+            "web",
+            "10.10.10.5:80",
+            JobResult(
+                job_id="x",
+                status="completed",
+                findings=[
+                    _finding("js_endpoint_found"),
+                    _finding("hardcoded_secret"),
+                    _finding("redirect_followed"),
+                ],
+            ),
+        ),
+    ]
+
+    categories = categorize_chain(_Chain(stages))
+
+    assert [e["finding"].finding_type for e in categories["hosts"]] == ["open_port"]
+    assert [e["finding"].finding_type for e in categories["endpoints"]] == ["js_endpoint_found"]
+    assert [e["finding"].finding_type for e in categories["issues"]] == ["hardcoded_secret"]
+    assert [e["finding"].finding_type for e in categories["operational"]] == ["redirect_followed"]
+    assert [h.ip for h in categories["live_hosts"]] == ["10.10.10.5"]
 
 
 def test_webui_app_module_does_not_import_the_old_sequential_chain():

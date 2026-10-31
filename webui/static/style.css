@@ -73,7 +73,7 @@ header p {
 }
 
 main {
-  max-width: 920px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 32px;
 }
@@ -350,6 +350,114 @@ button:hover { background: var(--accent-hover); }
 
 .operational-notes .finding {
   margin-top: 8px;
+}
+
+.results-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.results-sidebar {
+  flex: 0 0 200px;
+  position: sticky;
+  top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.results-sidebar a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.results-sidebar a:hover {
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--panel-border);
+}
+
+.results-sidebar .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.results-cards {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card .panel-title { margin-bottom: 14px; }
+
+.host-list {
+  margin-bottom: 10px;
+}
+
+.host-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.host-row:last-child { border-bottom: none; }
+
+.host-ip {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.host-services {
+  font-family: var(--mono);
+  color: var(--text-dim);
+}
+
+.finding-origin {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+.stage-errors .stage-error {
+  margin-bottom: 8px;
+}
+
+.stage-errors .stage-error:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .results-layout {
+    flex-direction: column;
+  }
+
+  .results-sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+  }
 }
 
 .scope-info {

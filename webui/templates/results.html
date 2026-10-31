@@ -45,62 +45,96 @@
       {% endfor %}
     </div>
 
-    {% for stage in chain.stages %}
-      <div class="panel stage">
-        <div class="stage-header">
-          <span class="agent-badge {{ stage.agent }}">{{ stage.agent }}</span>
-          <span class="stage-target">{{ stage.target }}</span>
+    {% set errored_stages = chain.stages | selectattr('error') | list %}
+    {% if errored_stages %}
+      <div class="panel stage-errors">
+        <p class="panel-title">Stage errors</p>
+        {% for stage in errored_stages %}
+          <div class="stage-error">
+            <span class="agent-badge {{ stage.agent }}">{{ stage.agent }}</span>
+            {{ stage.target }} &mdash; {{ stage.error }}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% macro finding_card(entry) %}
+      {% set finding = entry.finding %}
+      {% set sev = finding.finding_type | severity %}
+      <div class="finding {{ sev }}">
+        <div class="finding-top">
+          <span class="sev-tag {{ sev }}">{{ sev }}</span>
+          <span class="finding-type">{{ finding.finding_type }}</span>
+          <span class="finding-origin">{{ entry.agent }} &middot; {{ entry.target }}</span>
         </div>
+        <div class="finding-desc">{{ finding.description }}</div>
+        <div class="finding-evidence">{{ finding.evidence.summary }}</div>
+      </div>
+    {% endmacro %}
 
-        {% if stage.error %}
-          <div class="stage-error">{{ stage.error }}</div>
-        {% elif stage.result %}
-          {% set notable, operational = stage.result.findings | sort_findings %}
-          {% if notable %}
-            {% for finding in notable %}
-              {% set sev = finding.finding_type | severity %}
-              <div class="finding {{ sev }}">
-                <div class="finding-top">
-                  <span class="sev-tag {{ sev }}">{{ sev }}</span>
-                  <span class="finding-type">{{ finding.finding_type }}</span>
-                </div>
-                <div class="finding-desc">{{ finding.description }}</div>
-                <div class="finding-evidence">{{ finding.evidence.summary }}</div>
-              </div>
-            {% endfor %}
-          {% elif not operational %}
-            <div class="no-findings">No findings at this stage.</div>
-          {% endif %}
+    <div class="results-layout">
+      <nav class="results-sidebar">
+        <a href="#hosts">Hosts &amp; Open Ports <span class="count">{{ categories.live_hosts | length + categories.hosts | length }}</span></a>
+        <a href="#endpoints">Endpoints <span class="count">{{ categories.endpoints | length }}</span></a>
+        <a href="#issues">Issues <span class="count">{{ categories.issues | length }}</span></a>
+        <a href="#operational">Operational notes <span class="count">{{ categories.operational | length }}</span></a>
+      </nav>
 
-          {% if operational %}
-            <details class="operational-notes">
-              <summary>{{ operational | length }} operational note{{ 's' if operational | length != 1 else '' }} (redirects followed, ports seen, crawler fallbacks — not weaknesses)</summary>
-              {% for finding in operational %}
-                {% set sev = finding.finding_type | severity %}
-                <div class="finding {{ sev }}">
-                  <div class="finding-top">
-                    <span class="sev-tag {{ sev }}">{{ sev }}</span>
-                    <span class="finding-type">{{ finding.finding_type }}</span>
-                  </div>
-                  <div class="finding-desc">{{ finding.description }}</div>
-                  <div class="finding-evidence">{{ finding.evidence.summary }}</div>
-                </div>
-              {% endfor %}
-            </details>
-          {% endif %}
-
-          {% if stage.agent == 'network' and stage.result.hosts %}
-            <div style="margin-top:12px;" class="hint">
-              {% for host in stage.result.hosts %}
-                <div>{{ host.ip }}{% if host.hostname %} ({{ host.hostname }}){% endif %} &mdash;
-                  {% for svc in host.services %}{{ svc.port }}/{{ svc.protocol }} {{ svc.service }}{% if not loop.last %}, {% endif %}{% endfor %}
+      <div class="results-cards">
+        <section id="hosts" class="panel card">
+          <p class="panel-title">Hosts &amp; Open Ports</p>
+          {% if categories.live_hosts %}
+            <div class="host-list">
+              {% for host in categories.live_hosts %}
+                <div class="host-row">
+                  <span class="host-ip">{{ host.ip }}{% if host.hostname %} ({{ host.hostname }}){% endif %}</span>
+                  <span class="host-services">
+                    {% for svc in host.services %}{{ svc.port }}/{{ svc.protocol }} {{ svc.service }}{% if not loop.last %}, {% endif %}{% endfor %}
+                  </span>
                 </div>
               {% endfor %}
             </div>
           {% endif %}
-        {% endif %}
+          {% for entry in categories.hosts %}
+            {{ finding_card(entry) }}
+          {% endfor %}
+          {% if not categories.live_hosts and not categories.hosts %}
+            <div class="no-findings">No live hosts or open ports discovered.</div>
+          {% endif %}
+        </section>
+
+        <section id="endpoints" class="panel card">
+          <p class="panel-title">Endpoints</p>
+          {% if categories.endpoints %}
+            {% for entry in categories.endpoints %}
+              {{ finding_card(entry) }}
+            {% endfor %}
+          {% else %}
+            <div class="no-findings">No endpoints flagged.</div>
+          {% endif %}
+        </section>
+
+        <section id="issues" class="panel card">
+          <p class="panel-title">Issues</p>
+          {% if categories.issues %}
+            {% for entry in categories.issues %}
+              {{ finding_card(entry) }}
+            {% endfor %}
+          {% else %}
+            <div class="no-findings">No issues found.</div>
+          {% endif %}
+        </section>
+
+        <section id="operational" class="panel card">
+          <details class="operational-notes" {{ 'open' if not categories.hosts and not categories.endpoints and not categories.issues and categories.operational else '' }}>
+            <summary>{{ categories.operational | length }} operational note{{ 's' if categories.operational | length != 1 else '' }} (redirects followed, crawler fallbacks — not weaknesses)</summary>
+            {% for entry in categories.operational %}
+              {{ finding_card(entry) }}
+            {% endfor %}
+          </details>
+        </section>
       </div>
-    {% endfor %}
+    </div>
   </main>
 
   <footer>CART &middot; PTES-aligned &middot; scope-enforced &middot; built for Mitigata hackathon</footer>
