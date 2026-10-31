@@ -9,6 +9,61 @@
 # string, so there is no shell-injection surface.
 
 tools:
+  web:
+    runner: core.katana:run
+    parser: core.parsers.katana:parse
+    options:
+      max_endpoints: 500
+  katana:
+    binary: katana
+    prefer_local: true
+    required_version: v1.8.0
+    kill_process_tree: true
+    failure_pattern: '\[(?:ERR|FTL)\]'
+    command:
+      - katana
+      - -list
+      - "{seeds}"
+      - -proxy
+      - "{proxy}"
+      - -crawl-scope
+      - "{scope}"
+      - -crawl-out-scope
+      - '(?i)/(logout|log-out|signout|delete|remove)(/|\?|$)'
+      - -js-crawl
+      - -form-extraction
+      - -tech-detect
+      # Katana v1.8.0 known-files probing misses linked pages on the local
+      # nonstandard-port app through the scoped proxy. Use normal link crawling.
+      - -depth
+      - "{depth}"
+      - -crawl-duration
+      - "{crawl_duration}"
+      - -timeout
+      - "{request_timeout}"
+      - -retry
+      - "0"
+      - -concurrency
+      - "{concurrency}"
+      - -parallelism
+      - "1"
+      - -rate-limit
+      - "{rate_limit}"
+      - -max-response-size
+      - "1048576"
+      - -max-domain-pages
+      - "100"
+      - -filter-similar
+      - -jsonl
+      - -omit-raw
+      - -omit-body
+      - -silent
+      - -no-color
+      - -disable-update-check
+      - -output
+      - "{output}"
+    timeout_seconds: 60
+    parser: core.parsers.katana:parse
   nmap:
     binary: nmap
     command: ["nmap", "-sV", "-Pn", "-oX", "-", "{target}"]

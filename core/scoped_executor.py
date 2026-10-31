@@ -57,11 +57,13 @@ class RealScopedExecutor(ScopedExecutor):
         log_scope_check: Callable[[str, bool], None],
         tool_engine: ToolEngine | None = None,
         network_tool: str = "nmap",
+        web_options: dict | None = None,
     ) -> None:
         self._is_in_scope = is_in_scope
         self._log_scope_check = log_scope_check
         self._engine = tool_engine or ToolEngine()
         self._network_tool = network_tool
+        self._web_options = web_options or {}
 
     # ------------------------------------------------------------------
     # scan() — network discovery (FR-1)
@@ -97,10 +99,12 @@ class RealScopedExecutor(ScopedExecutor):
     # ------------------------------------------------------------------
 
     def http_get(self, url: str) -> dict:
-        raise NotImplementedError("fill in alongside the web agent (FR-2)")
+        raw = self._engine.run("web", target=url, guard=self._guard, mode="get", options_override=self._web_options)
+        return self._engine.parse("web", raw)[0]
 
     def crawl(self, base_url: str) -> list[dict]:
-        raise NotImplementedError("fill in alongside the web agent (FR-2)")
+        raw = self._engine.run("web", target=base_url, guard=self._guard, options_override=self._web_options)
+        return self._engine.parse("web", raw)
 
     # ------------------------------------------------------------------
     # internal

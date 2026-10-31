@@ -23,7 +23,7 @@ from common.contracts import (
 from core.scoped_executor import ScopedExecutor
 
 # Service names treated as web surfaces worth a follow-up web-agent job.
-WEB_SERVICE_NAMES = {"http", "https", "http-proxy", "http-alt"}
+WEB_SERVICE_NAMES = {"http", "https", "http-proxy", "http-alt", "https-alt", "ssl/http", "ssl/https"}
 
 
 def run(job: Job, executor: ScopedExecutor) -> JobResult:
@@ -68,12 +68,15 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
                 )
             )
 
-            if service.service.lower() in WEB_SERVICE_NAMES:
+            name = service.service.lower()
+            if service.protocol == "tcp" and name in WEB_SERVICE_NAMES:
+                authority = f"[{ip}]" if ":" in ip else ip
+                scheme = "https" if name in {"https", "https-alt", "ssl/http", "ssl/https"} else "http"
                 follow_up_jobs.append(
                     {
                         "agent": "web",
-                        "target": f"{ip}:{service.port}",
-                        "context": {"host_ip": ip, "service_port": service.port},
+                        "target": f"{authority}:{service.port}",
+                        "context": {"host_ip": ip, "service_port": service.port, "scheme": scheme},
                     }
                 )
 

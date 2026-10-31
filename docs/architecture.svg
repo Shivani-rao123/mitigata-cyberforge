@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="850" viewBox="0 0 1280 850" role="img" aria-labelledby="title desc">
+  <title id="title">CART system architecture</title>
+  <desc id="desc">Full planned architecture with implemented modules highlighted. Authorized scope feeds a planned Python coordinator and SQLite job queue. Network, web and planned binary agents produce evidence for planned verification and reporting. Current execution runs Python CLI, Nmap, Katana and JSON export sequentially. Shared execution controls enforce scope and tool budgets.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 8 4 0 8" fill="none" stroke="#819ab8" stroke-width="1.5"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .heading { fill: #f3f7fc; font-size: 36px; font-weight: 700; }
+      .sub { fill: #adbed2; font-size: 19px; }
+      .label { fill: #f3f7fc; font-size: 22px; font-weight: 700; }
+      .detail { fill: #b8c8da; font-size: 17px; }
+      .small { fill: #adbed2; font-size: 15px; }
+      .live { fill: #132b39; stroke: #56e0c2; stroke-width: 1.6; }
+      .planned { fill: #101e30; stroke: #7890ac; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .edge { fill: none; stroke: #819ab8; stroke-width: 2; }
+      .status { fill: #56e0c2; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+      .future { fill: #b7caff; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+    </style>
+  </defs>
+  <rect width="1280" height="850" rx="18" fill="#0b1423"/>
+  <text x="40" y="61" class="heading">CART architecture</text>
+  <text x="40" y="96" class="sub">One authorized scope. Coordinated discovery. Evidence-backed findings.</text>
+  <rect x="40" y="120" width="17" height="17" rx="3" class="live"/>
+  <text x="67" y="134" class="small">Implemented</text>
+  <rect x="207" y="120" width="17" height="17" rx="3" class="planned"/>
+  <text x="234" y="134" class="small">Planned</text>
+  <text x="1240" y="134" text-anchor="end" class="small">Full system design</text>
+
+  <!-- Orthogonal flow links remain behind the nodes. -->
+  <path d="M220 375H265" class="edge" marker-end="url(#arrow)"/>
+  <path d="M465 375H490V245H520 M490 375H520 M490 375V505H520" class="edge"/>
+  <path d="M740 245H770V505H740 M740 375H800" class="edge"/>
+  <path d="M980 375H1020" class="edge" marker-end="url(#arrow)"/>
+  <path d="M490 245H520 M490 375H520 M490 505H520 M770 375H800" class="edge" marker-end="url(#arrow)"/>
+  <path d="M1130 435V470" class="edge" marker-end="url(#arrow)"/>
+
+  <rect x="40" y="310" width="180" height="130" rx="10" class="live"/>
+  <text x="57" y="335" class="status">IMPLEMENTED</text>
+  <text x="57" y="367" class="label">Scope + CLI</text>
+  <text x="57" y="396" class="detail">Python + PyYAML</text>
+  <text x="57" y="420" class="detail">Targets and ports</text>
+
+  <rect x="265" y="310" width="200" height="130" rx="10" class="planned"/>
+  <text x="282" y="335" class="future">PLANNED</text>
+  <text x="282" y="367" class="label">Coordinator</text>
+  <text x="282" y="396" class="detail">Python + SQLite</text>
+  <text x="282" y="420" class="detail">Queue and handoffs</text>
+
+  <rect x="520" y="190" width="220" height="110" rx="10" class="live"/>
+  <text x="537" y="214" class="status">IMPLEMENTED</text>
+  <text x="537" y="245" class="label">Network agent</text>
+  <text x="537" y="274" class="detail">Nmap: hosts and services</text>
+
+  <rect x="520" y="320" width="220" height="110" rx="10" class="live"/>
+  <text x="537" y="344" class="status">IMPLEMENTED</text>
+  <text x="537" y="375" class="label">Web agent</text>
+  <text x="537" y="404" class="detail">Katana v1.8.0: inventory</text>
+
+  <rect x="520" y="450" width="220" height="110" rx="10" class="planned"/>
+  <text x="537" y="474" class="future">PLANNED</text>
+  <text x="537" y="505" class="label">Binary agent</text>
+  <text x="537" y="534" class="detail">Ghidra + GNU binutils</text>
+
+  <rect x="800" y="310" width="180" height="130" rx="10" class="planned"/>
+  <text x="817" y="335" class="future">PLANNED</text>
+  <text x="817" y="367" class="label">Verification</text>
+  <text x="817" y="396" class="detail">Python + Requests</text>
+  <text x="817" y="420" class="detail">Checks and proof</text>
+
+  <rect x="1020" y="310" width="220" height="130" rx="10" class="planned"/>
+  <text x="1037" y="335" class="future">PLANNED</text>
+  <text x="1037" y="367" class="label">Report + paths</text>
+  <text x="1037" y="396" class="detail">Jinja2 + NetworkX</text>
+  <text x="1037" y="420" class="detail">PTES tags, HTML, JSON</text>
+
+  <rect x="1020" y="470" width="220" height="90" rx="10" class="planned"/>
+  <text x="1037" y="494" class="future">PLANNED</text>
+  <text x="1037" y="524" class="label">Flask dashboard</text>
+  <text x="1037" y="546" class="small">Status and findings API</text>
+
+  <rect x="40" y="598" width="1200" height="66" rx="8" fill="#132b39" stroke="#56e0c2"/>
+  <text x="60" y="624" class="status">IMPLEMENTED EXECUTION BOUNDARY</text>
+  <text x="60" y="650" class="detail">ScopedExecutor + ToolEngine + web scope proxy enforce destinations, ports, timeouts and crawl budgets.</text>
+  <rect x="40" y="680" width="1200" height="66" rx="8" class="planned"/>
+  <text x="60" y="706" class="future">PLANNED SHARED STATE AND DEPLOYMENT</text>
+  <text x="60" y="732" class="detail">SQLite stores jobs and findings. Files retain evidence. Pydantic defines contracts today. Docker Compose packages the system.</text>
+  <text x="40" y="789" fill="#56e0c2" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">Working pipeline today</text>
+  <text x="310" y="789" class="sub">Python CLI → Nmap → scoped Katana → Pydantic results → JSON</text>
+  <text x="40" y="823" class="small">Discovery output is an inventory. Verification and confirmed vulnerability reporting are planned.</text>
+</svg>

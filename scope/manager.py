@@ -20,6 +20,12 @@ class ScopeManager:
             config = yaml.safe_load(f)
 
         self._networks = [ipaddress.ip_network(t, strict=False) for t in config.get("targets", [])]
+        self.allowed_ports = config.get("allowed_ports")
+        if self.allowed_ports is not None and (
+            not isinstance(self.allowed_ports, list) or not self.allowed_ports or
+            any(type(port) is not int or not 1 <= port <= 65535 for port in self.allowed_ports)
+        ):
+            raise ValueError("allowed_ports must be a nonempty list of ports from 1 to 65535")
         self._log_entries: list[tuple[str, bool]] = []
 
     def is_in_scope(self, target: str) -> bool:
@@ -37,7 +43,7 @@ class ScopeManager:
             return False
 
         return any(
-            candidate.subnet_of(network) or candidate == network
+            candidate.version == network.version and candidate.subnet_of(network)
             for network in self._networks
         )
 

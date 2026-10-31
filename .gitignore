@@ -1,0 +1,12 @@
+.tools/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+/katana-engine-test.json
+/katana-inputs-engine-test.json
+/katana-test.json
+/nmap-test.json
+/inputs-test.json
+/combined-test.json
+/studio-inputs*.jsonl

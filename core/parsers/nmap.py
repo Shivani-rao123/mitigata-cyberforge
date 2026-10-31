@@ -42,6 +42,8 @@ def parse(xml_text: str) -> dict:
 
                 service_el = port_el.find("service")
                 service_name = service_el.get("name", "unknown") if service_el is not None else "unknown"
+                if service_el is not None and service_el.get("tunnel") == "ssl" and service_name in {"http", "http-alt", "http-proxy"}:
+                    service_name = "https"
                 product = service_el.get("product") if service_el is not None else None
                 version_num = service_el.get("version") if service_el is not None else None
                 version = " ".join(p for p in [product, version_num] if p) or None
