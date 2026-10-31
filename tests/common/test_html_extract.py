@@ -12,8 +12,10 @@ from common.html_extract import (
     MAX_FORMS_PER_PAGE,
     MAX_INPUTS_PER_FORM,
     MAX_LINKS_PER_PAGE,
+    MAX_SCRIPTS_PER_PAGE,
     extract_forms,
     extract_links,
+    extract_script_srcs,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,62 @@ def test_malformed_href_does_not_crash():
     html = '<a href="/ok\x00bad">bad</a><a href="/fine">fine</a>'
     links = extract_links(html, "http://10.10.10.5/")
     assert "http://10.10.10.5/fine" in links
+
+
+# ---------------------------------------------------------------------------
+# extract_script_srcs
+# ---------------------------------------------------------------------------
+
+
+def test_relative_script_src_resolved_against_base_url():
+    html = '<script src="/static/app.js"></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert srcs == ["http://10.10.10.5/static/app.js"]
+
+
+def test_absolute_script_src_passed_through():
+    html = '<script src="https://cdn.example.com/lib.js"></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert srcs == ["https://cdn.example.com/lib.js"]
+
+
+def test_inline_script_with_no_src_is_ignored():
+    html = "<script>console.log('hi');</script>"
+    assert extract_script_srcs(html, "http://10.10.10.5/") == []
+
+
+def test_script_tag_with_extra_attributes_still_matches_src():
+    html = '<script type="text/javascript" src="/a.js" defer></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert srcs == ["http://10.10.10.5/a.js"]
+
+
+def test_multiple_script_tags_all_found_in_order():
+    html = '<script src="/a.js"></script><script src="/b.js"></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert srcs == ["http://10.10.10.5/a.js", "http://10.10.10.5/b.js"]
+
+
+def test_empty_src_is_skipped():
+    html = '<script src=""></script><script src="/real.js"></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert srcs == ["http://10.10.10.5/real.js"]
+
+
+def test_no_html_returns_empty_list_for_scripts():
+    assert extract_script_srcs("", "http://10.10.10.5/") == []
+
+
+def test_script_count_is_capped():
+    html = "".join(f'<script src="/s{i}.js"></script>' for i in range(MAX_SCRIPTS_PER_PAGE + 20))
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert len(srcs) == MAX_SCRIPTS_PER_PAGE
+
+
+def test_malformed_script_src_does_not_crash():
+    html = '<script src="/ok\x00bad.js"></script><script src="/fine.js"></script>'
+    srcs = extract_script_srcs(html, "http://10.10.10.5/")
+    assert "http://10.10.10.5/fine.js" in srcs
 
 
 # ---------------------------------------------------------------------------

@@ -19,19 +19,26 @@ endpoints and forms it finds, and flags common issues:
     small set of security-relevant response headers.
   - directory_listing_enabled   — a response that looks like an
     autoindex / directory-listing page.
-  - js_secret_found             — a hardcoded secret pulled directly out
-    of a JS bundle's source (katana's -jsluice mode only — the native
-    requests+regex crawl can never see this, since it never fetches
-    <script src> as code).
+  - js_secret_found             — a hardcoded secret pulled out of a JS
+    bundle's source. Found via katana's -jsluice mode when available, or
+    (when it isn't — see common/js_extract.py) via this agent's own
+    fetch-and-regex-scan fallback: fetch every <script src=...> the
+    crawl found and scan its body against common/secret_patterns.py.
+    Narrower than katana (a real JS parser), but needs no external
+    binary — works on any machine with just this project's existing
+    Python deps.
   - js_endpoint_found           — an API endpoint referenced only inside
     JS source, not in any server-rendered HTML — exactly the "attack
-    surface a plain crawler can't see on a JS/React/TS SPA" gap (katana
-    -jsluice only).
+    surface a plain crawler can't see on a JS/React/TS SPA" gap. Same
+    katana-or-fallback split as js_secret_found; the fallback uses
+    common/js_extract.py's regex matching for fetch/axios/jQuery.ajax/
+    XMLHttpRequest call shapes — the common cases, not a full JS parser.
   - crawler_fallback            — informational: the preferred JS-aware
     crawler (katana) wasn't available/usable, so this run fell back to
-    the native crawler. Surfaced as a (non-security) finding rather than
-    a silent downgrade, so a report reader can tell "found nothing" apart
-    from "couldn't look as thoroughly as it could have."
+    the native crawler (with its own JS-bundle regex scan — see above,
+    not a silent "give up"). Surfaced as a (non-security) finding rather
+    than a silent downgrade, so a report reader can tell "found nothing"
+    apart from "couldn't look as thoroughly as it could have."
 
 Never calls `requests` directly — all HTTP access goes through the
 injected `executor` (core.scoped_executor.ScopedExecutor), which enforces
@@ -62,8 +69,10 @@ import subprocess
 from urllib.parse import urljoin, urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
-from common.html_extract import extract_links
+from common.html_extract import extract_links, extract_script_srcs
+from common.js_extract import extract_js_endpoints
 from common.redact import redact
+from common.secret_patterns import SECRET_PATTERNS
 from core.scoped_executor import ScopedExecutor, ToolNotConfigured, ToolNotInstalled
 
 # Paths worth a dedicated look even if nothing else about them is odd.
@@ -118,6 +127,12 @@ REFLECTED_PROBE_MARKER = "CARTPROBE_6f1e9c"
 # Errors that mean "katana isn't usable right now" — in "auto" mode these
 # trigger a fallback to the native crawler instead of failing the job.
 _KATANA_UNAVAILABLE_ERRORS = (ToolNotInstalled, ToolNotConfigured, subprocess.TimeoutExpired)
+
+# Hard cap on how many <script src=...> files one crawl will fetch and
+# scan — a page can reference a lot of third-party JS (analytics, ad
+# tech, UI framework chunks); bounding this keeps a crawl's time budget
+# predictable regardless of how many scripts a page happens to load.
+MAX_JS_FILES_PER_CRAWL = 15
 
 
 def run(job: Job, executor: ScopedExecutor) -> JobResult:
@@ -193,7 +208,8 @@ def _crawl(
         )
 
     if crawler_mode == "requests":
-        return executor.crawl(base_url), [], []
+        pages = executor.crawl(base_url)
+        return pages, _scan_js_bundles(executor, pages, base_url), []
 
     has_js_crawl = hasattr(executor, "crawl_js")
 
@@ -207,12 +223,14 @@ def _crawl(
         return result["pages"], result["js_findings"], []
 
     # "auto": prefer katana when the executor offers it at all, falling
-    # back to the native crawler on anything that means "katana isn't
-    # usable right now" rather than failing the whole job over a
-    # missing/misbehaving optional tool. An executor that doesn't offer
+    # back to the native crawler (plus its own JS-bundle regex scan —
+    # see _scan_js_bundles) on anything that means "katana isn't usable
+    # right now" rather than failing the whole job over a missing/
+    # misbehaving optional tool. An executor that doesn't offer
     # crawl_js at all just quietly uses the native crawler — no note.
     if not has_js_crawl:
-        return executor.crawl(base_url), [], []
+        pages = executor.crawl(base_url)
+        return pages, _scan_js_bundles(executor, pages, base_url), []
 
     try:
         result = executor.crawl_js(base_url)
@@ -223,14 +241,86 @@ def _crawl(
             description=(
                 "The JS-aware crawler (katana) wasn't usable for this run "
                 f"({type(exc).__name__}: {exc}) — fell back to the native "
-                "crawler. Endpoints/secrets that only exist inside JS "
-                "bundles may have been missed."
+                "crawler's own (narrower, regex-based) JS-bundle scan. "
+                "Endpoints/secrets built dynamically (string concatenation, "
+                "a wrapper function) rather than as a plain string literal "
+                "may have been missed."
             ),
             host=_host(base_url),
             service_port=_port(base_url),
             evidence=Evidence(kind="tool_unavailable", summary=str(exc)),
         )
-        return executor.crawl(base_url), [], [fallback_note]
+        pages = executor.crawl(base_url)
+        return pages, _scan_js_bundles(executor, pages, base_url), [fallback_note]
+
+
+def _scan_js_bundles(executor: ScopedExecutor, pages: list[dict], base_url: str) -> list[dict]:
+    """
+    The no-external-binary alternative to katana's -jsluice: fetches every
+    <script src=...> referenced by the crawled pages and regex-scans each
+    one for secrets (common/secret_patterns.py — the same patterns the
+    binary agent and katana parser use) and API-call endpoints
+    (common/js_extract.py). Narrower than a real JS parser, but needs
+    nothing beyond this project's existing Python dependencies.
+
+    Returns js_findings in the same {"finding_kind": "secret"|"endpoint",
+    "source": ..., ...} shape core/parsers/katana.py produces, so
+    _check_js_finding() below handles either source identically.
+    """
+    script_urls: list[str] = []
+    seen_scripts: set[str] = set()
+    for page in pages:
+        for src in extract_script_srcs(page.get("body", ""), page.get("url", base_url)):
+            if src in seen_scripts:
+                continue
+            seen_scripts.add(src)
+            script_urls.append(src)
+            if len(script_urls) >= MAX_JS_FILES_PER_CRAWL:
+                break
+        if len(script_urls) >= MAX_JS_FILES_PER_CRAWL:
+            break
+
+    js_findings: list[dict] = []
+    seen_secrets: set[tuple[str, str]] = set()
+
+    for script_url in script_urls:
+        response = executor.http_get(script_url)
+        body = response.get("body", "")
+        if not body:
+            continue
+
+        for secret_type, (pattern, description) in SECRET_PATTERNS.items():
+            match = pattern.search(body)
+            if not match:
+                continue
+            dedup_key = (script_url, secret_type)
+            if dedup_key in seen_secrets:
+                continue
+            seen_secrets.add(dedup_key)
+            js_findings.append(
+                {
+                    "finding_kind": "secret",
+                    "source": script_url,
+                    "rule": description,
+                    "value": match.group(0),
+                }
+            )
+
+        for endpoint_match in extract_js_endpoints(body):
+            if endpoint_match["endpoint"].startswith(("http://", "https://")):
+                resolved = endpoint_match["endpoint"]
+            else:
+                resolved = urljoin(script_url, endpoint_match["endpoint"])
+            js_findings.append(
+                {
+                    "finding_kind": "endpoint",
+                    "source": script_url,
+                    "endpoint": resolved,
+                    "method": endpoint_match["method"],
+                }
+            )
+
+    return js_findings
 
 
 def _to_base_url(target: str) -> str:

@@ -30,6 +30,12 @@ from urllib.parse import urljoin
 # than risk a looser, slower pattern).
 _HREF_RE = re.compile(r'href\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
 
+# <script src="..."> / <script src='...'> only — not inline <script>...
+# </script> bodies, which extract_links-style regex can't safely isolate
+# anyway (nested quotes/braces make a tight bound impractical). Bounded
+# like _HREF_RE for the same reason.
+_SCRIPT_SRC_RE = re.compile(r'<script\b[^>]{0,2048}\bsrc\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
+
 # Both quantifiers are explicitly bounded, not just lazy. A lazy `.*?`
 # alone is NOT enough to avoid a real performance cliff here: with no
 # cap, many "<form " occurrences that never see a closing '>' (or many
@@ -57,6 +63,7 @@ _INPUT_NAME_RE = re.compile(r'<input[^>]*\bname\s*=\s*["\']([^"\']+)["\']', re.I
 MAX_LINKS_PER_PAGE = 500
 MAX_FORMS_PER_PAGE = 100
 MAX_INPUTS_PER_FORM = 200
+MAX_SCRIPTS_PER_PAGE = 50
 
 
 def extract_links(html: str, base_url: str) -> list[str]:
@@ -78,6 +85,29 @@ def extract_links(html: str, base_url: str) -> list[str]:
         except ValueError:
             continue  # malformed href (e.g. control chars) — skip, don't crash
     return links
+
+
+def extract_script_srcs(html: str, base_url: str) -> list[str]:
+    """Absolute URLs for every <script src=...> in `html`, resolved
+    against `base_url` — used to find JS bundles worth fetching and
+    scanning for secrets/endpoints without a JS-aware crawler (see
+    common/js_extract.py). Does not dedupe — callers decide that.
+    Bounded by MAX_SCRIPTS_PER_PAGE regardless of how many appear."""
+    if not html:
+        return []
+
+    srcs: list[str] = []
+    for src in _SCRIPT_SRC_RE.findall(html):
+        if len(srcs) >= MAX_SCRIPTS_PER_PAGE:
+            break
+        src = src.strip()
+        if not src:
+            continue
+        try:
+            srcs.append(urljoin(base_url, src))
+        except ValueError:
+            continue  # malformed src (e.g. control chars) — skip, don't crash
+    return srcs
 
 
 def extract_forms(html: str) -> list[dict]:
