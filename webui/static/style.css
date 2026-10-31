@@ -203,27 +203,6 @@ button:hover { background: var(--accent-hover); }
   margin-top: 2px;
 }
 
-.chain-flow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 22px;
-  font-size: 13px;
-}
-
-.chain-step {
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 20px;
-  padding: 6px 14px;
-  font-weight: 500;
-}
-
-.chain-step.ok { border-color: rgba(99,102,241,0.5); color: var(--accent); }
-.chain-step.err { border-color: rgba(240,82,82,0.5); color: var(--high); }
-.chain-arrow { color: var(--text-dim); }
-
 .stage { margin-bottom: 16px; }
 
 .stage-header {
@@ -385,6 +364,32 @@ button:hover { background: var(--accent-hover); }
   color: var(--text);
   background: var(--panel);
   border-color: var(--panel-border);
+}
+
+.results-sidebar a.active {
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--accent);
+}
+
+/* Real tab-switching, JS-enhanced only (results.html's script adds
+   "js-tabs" to <body> once it's wired up) — exactly one .tab-pane
+   visible at a time instead of one long page you scroll through.
+   Without JS, every pane just stays visible and the sidebar's
+   href="#id" links fall back to plain anchor-scrolling, so nothing
+   breaks either way. */
+.js-tabs .tab-pane {
+  display: none;
+}
+
+.js-tabs .tab-pane.active {
+  display: block;
+}
+
+.panel-subtitle {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: -8px 0 14px;
 }
 
 .results-sidebar .count {

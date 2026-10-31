@@ -107,14 +107,17 @@ def test_scan_route_uses_the_fr4_concurrent_orchestrator_not_the_old_sequential_
     mock_binary.assert_not_called()
 
 
-def test_results_page_surfaces_real_findings_above_collapsed_operational_notes():
+def test_results_page_keeps_real_findings_out_of_the_operational_notes_pane():
     """UI-only regression: a real scan against a file-manager-style
     target produces a dozen redirect_followed notes for every finding
-    that actually matters. sort_findings/results.html must put the
-    genuine finding (missing_security_header) before the collapsed
-    <details> block holding the operational noise (redirect_followed,
-    crawler_fallback, open_port), not interleave them in whatever order
-    the agent happened to produce them."""
+    that actually matters. categorize_chain()/results.html must keep
+    the genuine finding (missing_security_header, in the "Issues" tab
+    pane) structurally separate from the operational noise
+    (redirect_followed, crawler_fallback, in the "Operational notes"
+    tab pane) — each its own <section>, with the sidebar's count badge
+    telling the reader how much noise is in the latter without having
+    to open it — rather than interleaving them in whatever order the
+    agent happened to produce them."""
 
     def _finding(finding_type):
         return FindingOut(
@@ -146,9 +149,15 @@ def test_results_page_surfaces_real_findings_above_collapsed_operational_notes()
 
     html = resp.get_data(as_text=True)
     assert resp.status_code == 200
-    assert "<details" in html
-    assert "12 operational notes" in html  # crawler_fallback + 11 redirect_followed
-    assert html.index("missing_security_header") < html.index("<details")
+    # Sidebar badge shows the operational count (crawler_fallback + 11
+    # redirect_followed) without needing to open that tab.
+    assert '>12</span>' in html
+    # Structurally separate panes: the Issues section (with the real
+    # finding) is written before the Operational notes section.
+    assert html.index('id="issues"') < html.index('id="operational"')
+    issues_section = html[html.index('id="issues"') : html.index('id="operational"')]
+    assert "missing_security_header" in issues_section
+    assert "redirect_followed" not in issues_section
 
 
 def test_results_page_splits_findings_into_separate_category_cards():

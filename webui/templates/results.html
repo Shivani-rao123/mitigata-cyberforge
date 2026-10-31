@@ -38,13 +38,6 @@
       </div>
     </div>
 
-    <div class="chain-flow">
-      {% for stage in chain.stages %}
-        {% if not loop.first %}<span class="chain-arrow">&rarr;</span>{% endif %}
-        <span class="chain-step {{ 'err' if stage.error else 'ok' }}">{{ stage.agent }}</span>
-      {% endfor %}
-    </div>
-
     {% set errored_stages = chain.stages | selectattr('error') | list %}
     {% if errored_stages %}
       <div class="panel stage-errors">
@@ -73,15 +66,15 @@
     {% endmacro %}
 
     <div class="results-layout">
-      <nav class="results-sidebar">
-        <a href="#hosts">Hosts &amp; Open Ports <span class="count">{{ categories.live_hosts | length + categories.hosts | length }}</span></a>
-        <a href="#endpoints">Endpoints <span class="count">{{ categories.endpoints | length }}</span></a>
-        <a href="#issues">Issues <span class="count">{{ categories.issues | length }}</span></a>
-        <a href="#operational">Operational notes <span class="count">{{ categories.operational | length }}</span></a>
+      <nav class="results-sidebar" id="results-tabs">
+        <a href="#hosts" data-tab="hosts" class="active">Hosts &amp; Open Ports <span class="count">{{ categories.live_hosts | length + categories.hosts | length }}</span></a>
+        <a href="#endpoints" data-tab="endpoints">Endpoints <span class="count">{{ categories.endpoints | length }}</span></a>
+        <a href="#issues" data-tab="issues">Issues <span class="count">{{ categories.issues | length }}</span></a>
+        <a href="#operational" data-tab="operational">Operational notes <span class="count">{{ categories.operational | length }}</span></a>
       </nav>
 
       <div class="results-cards">
-        <section id="hosts" class="panel card">
+        <section id="hosts" class="panel card tab-pane active">
           <p class="panel-title">Hosts &amp; Open Ports</p>
           {% if categories.live_hosts %}
             <div class="host-list">
@@ -103,7 +96,7 @@
           {% endif %}
         </section>
 
-        <section id="endpoints" class="panel card">
+        <section id="endpoints" class="panel card tab-pane">
           <p class="panel-title">Endpoints</p>
           {% if categories.endpoints %}
             {% for entry in categories.endpoints %}
@@ -114,7 +107,7 @@
           {% endif %}
         </section>
 
-        <section id="issues" class="panel card">
+        <section id="issues" class="panel card tab-pane">
           <p class="panel-title">Issues</p>
           {% if categories.issues %}
             {% for entry in categories.issues %}
@@ -125,18 +118,62 @@
           {% endif %}
         </section>
 
-        <section id="operational" class="panel card">
-          <details class="operational-notes" {{ 'open' if not categories.hosts and not categories.endpoints and not categories.issues and categories.operational else '' }}>
-            <summary>{{ categories.operational | length }} operational note{{ 's' if categories.operational | length != 1 else '' }} (redirects followed, crawler fallbacks — not weaknesses)</summary>
+        <section id="operational" class="panel card tab-pane">
+          <p class="panel-title">Operational notes</p>
+          <p class="panel-subtitle">Redirects followed, crawler fallbacks — not weaknesses.</p>
+          {% if categories.operational %}
             {% for entry in categories.operational %}
               {{ finding_card(entry) }}
             {% endfor %}
-          </details>
+          {% else %}
+            <div class="no-findings">No operational notes.</div>
+          {% endif %}
         </section>
       </div>
     </div>
   </main>
 
   <footer>CART &middot; PTES-aligned &middot; scope-enforced &middot; built for Mitigata hackathon</footer>
+
+  <script>
+    // Sidebar acts as real tabs: exactly one card visible at a time,
+    // switched by clicking (instead of #anchor links that just scroll
+    // down one long page) — direct fix for "it shouldn't be continuous
+    // scrolling" feedback. Falls back gracefully to plain anchor-scroll
+    // if JS is somehow disabled (href="#id" still points at each
+    // section, and CSS below only hides non-active panes when JS has
+    // added the "js-tabs" class, so nothing breaks either way).
+    (function () {
+      var nav = document.getElementById("results-tabs");
+      var panes = document.querySelectorAll(".tab-pane");
+      if (!nav || !panes.length) return;
+
+      document.body.classList.add("js-tabs");
+
+      function activate(tabId) {
+        panes.forEach(function (pane) {
+          pane.classList.toggle("active", pane.id === tabId);
+        });
+        nav.querySelectorAll("a").forEach(function (link) {
+          link.classList.toggle("active", link.dataset.tab === tabId);
+        });
+      }
+
+      nav.addEventListener("click", function (event) {
+        var link = event.target.closest("a[data-tab]");
+        if (!link) return;
+        event.preventDefault();
+        activate(link.dataset.tab);
+        history.replaceState(null, "", "#" + link.dataset.tab);
+      });
+
+      // Deep link support: reopen the right tab if the page was loaded
+      // with an existing #hash (e.g. a bookmarked/shared results link).
+      var initial = window.location.hash.replace("#", "");
+      if (initial && document.getElementById(initial)) {
+        activate(initial);
+      }
+    })();
+  </script>
 </body>
 </html>
