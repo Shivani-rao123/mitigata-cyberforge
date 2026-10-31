@@ -21,18 +21,24 @@ class MockScopedExecutor(ScopedExecutor):
     Loads canned results from fixtures/ instead of actually scanning or
     crawling anything. Pass a custom `scan_result` / `http_result` /
     `crawl_result` to override the default fixture for a specific test.
+    Pass `http_get_fn` instead of `http_result` when a test needs
+    `http_get()` to return something different depending on the URL it's
+    called with (e.g. the web agent's reflected-input probe vs. its
+    header check hitting the same mock in one run).
     """
 
     def __init__(
         self,
         scan_result: dict | None = None,
         http_result: dict | None = None,
+        http_get_fn=None,
         crawl_result: list[dict] | None = None,
         download_result: bytes | None = None,
         raise_on_download: Exception | None = None,
     ) -> None:
         self._scan_result = scan_result
         self._http_result = http_result
+        self._http_get_fn = http_get_fn
         self._crawl_result = crawl_result
         self._download_result = download_result
         self._raise_on_download = raise_on_download
@@ -44,6 +50,8 @@ class MockScopedExecutor(ScopedExecutor):
             return json.load(f)
 
     def http_get(self, url: str) -> dict:
+        if self._http_get_fn is not None:
+            return self._http_get_fn(url)
         if self._http_result is not None:
             return self._http_result
         return {"status": 200, "headers": {}, "body": ""}
