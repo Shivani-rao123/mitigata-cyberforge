@@ -7,3 +7,9 @@ venv/
 
 # compiled test fixture binary — rebuild locally with: gcc -o fixtures/vulnerable_binary/vuln fixtures/vulnerable_binary/vuln.c
 fixtures/vulnerable_binary/vuln
+
+# core/db.py's default on-disk SQLite store — created automatically the
+# first time anything (e.g. importing api/app.py, which builds a
+# Database() at module level) runs without an explicit db_path. Local
+# runtime state, not something to commit.
+store/cart.db
