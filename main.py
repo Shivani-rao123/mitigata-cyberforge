@@ -97,6 +97,12 @@ def _run_network(args: argparse.Namespace) -> None:
     job = Job(job_id="run-001", agent="network", target=args.target)
 
     print(f"\n=== Running network discovery against {args.target} ===")
+    print(
+        "(nmap's output is captured and only shown once the scan finishes — "
+        "a real remote host can take 1-3+ minutes with no visible progress "
+        "in the meantime, especially if some ports are firewalled rather "
+        "than closed outright. This is normal, not a hang.)"
+    )
     result = run_network_agent(job, executor)
 
     print(f"\n=== Result: {result.status} ===")

@@ -15,7 +15,18 @@ tools:
     # regardless. Correct for a SINGLE known target — some real hosts
     # (a web server behind a firewall, say) block ping and would be
     # wrongly skipped as "down" without it.
-    command: ["nmap", "-sV", "-Pn", "-oX", "-", "{target}"]
+    # -T4: aggressive timing. Matters most against a REMOTE host over
+    # the internet (as opposed to a fast local LAN) — any port a
+    # firewall silently drops packets for (vs. actively rejecting) makes
+    # nmap retry with backoff before giving up on it, and the default
+    # timing template (T3) is conservative enough that a handful of
+    # filtered ports on a real remote host can make a scan take minutes
+    # with zero visible progress (core/tool_engine.py captures all
+    # output silently until the process finishes). T4 is the commonly
+    # recommended setting for scanning a real network you have decent
+    # bandwidth to (anything but a slow/high-latency or deliberately
+    # rate-limited link) and does not reduce accuracy.
+    command: ["nmap", "-sV", "-Pn", "-T4", "-oX", "-", "{target}"]
     # when allowed_ports is given, "-p {ports}" is inserted after the binary
     ports_flag: ["-p", "{ports}"]
     timeout_seconds: 300
