@@ -28,3 +28,21 @@ tools:
   #   timeout_seconds: 120
   #   output_format: json_lines
   #   parser: core.parsers.naabu:parse
+
+  # --- Binary analysis (FR-3) — these run on a local FILE PATH, not a
+  # network target. No scope check applies (nothing touches the network);
+  # the binary agent validates the path exists and is a real file instead.
+
+  strings:
+    binary: strings
+    command: ["strings", "{target}"]
+    timeout_seconds: 30
+    output_format: text
+    parser: core.parsers.strings_output:parse
+
+  nm:
+    binary: nm
+    command: ["nm", "-D", "--undefined-only", "{target}"]
+    timeout_seconds: 30
+    output_format: text
+    parser: core.parsers.nm_output:parse
