@@ -105,8 +105,27 @@ def _run_binary(args: argparse.Namespace) -> None:
 
     job = Job(job_id="run-001", agent="binary", target=args.target)
 
+    executor = None
+    if args.target.startswith("http://") or args.target.startswith("https://"):
+        # A URL target has to be downloaded first, which touches the
+        # network — so it needs the same scope-checked executor the
+        # network agent uses, built from --scope / --scope-file exactly
+        # the same way.
+        if args.scope:
+            cidrs = [c.strip() for c in args.scope.split(",") if c.strip()]
+            print(f"=== CART — scope for this run: {cidrs} ===")
+            scope_manager = ScopeManager(cidrs=cidrs)
+        else:
+            print(f"=== CART — loading scope from {args.scope_file} ===")
+            scope_manager = ScopeManager(args.scope_file)
+
+        executor = RealScopedExecutor(
+            is_in_scope=scope_manager.is_in_scope,
+            log_scope_check=scope_manager.log_scope_check,
+        )
+
     print(f"\n=== Running binary analysis against {args.target} ===")
-    result = run_binary_agent(job)
+    result = run_binary_agent(job, executor=executor)
 
     print(f"\n=== Result: {result.status} ===")
     print(f"Findings: {len(result.findings)}")

@@ -15,17 +15,26 @@ the target file. Two checks:
      (strcpy, gets, system, etc). Non-ELF files or statically-linked
      binaries simply produce an empty function list — not an error.
 
-`job.target` is a LOCAL FILE PATH, not a network address, so this agent
-does NOT go through ScopedExecutor (no network is touched). It validates
-the path directly instead.
+`job.target` can be either:
+  - a LOCAL FILE PATH — analyzed directly, no network touched, no
+    ScopedExecutor needed.
+  - an http(s):// URL — e.g. a downloadable binary the web agent found
+    while crawling (an installer, firmware, an app). In that case an
+    `executor` (core.scoped_executor.ScopedExecutor) IS required: the URL
+    is downloaded through executor.download(), which scope-checks it the
+    same way every other network access in this project is checked,
+    before any analysis happens on the downloaded bytes.
 """
 
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
+from core.scoped_executor import ScopedExecutor
 from core.tool_engine import ToolEngine
 
 # name -> (compiled regex, human-readable description)
@@ -64,21 +73,51 @@ UNSAFE_FUNCTIONS: dict[str, str] = {
 }
 
 
-def run(job: Job, tool_engine: ToolEngine | None = None) -> JobResult:
+def run(
+    job: Job,
+    tool_engine: ToolEngine | None = None,
+    executor: ScopedExecutor | None = None,
+) -> JobResult:
     """
-    Execute a binary-analysis job. `job.target` must be a path to an
-    existing regular file. Raises FileNotFoundError / ValueError for a
-    bad path rather than silently producing an empty result — a missing
-    target is a setup bug, not "nothing found".
+    Execute a binary-analysis job. `job.target` is either a local file
+    path or an http(s) URL (see module docstring). Raises FileNotFoundError
+    / ValueError for a bad local path, DownloadError for a failed/oversized
+    download, and ValueError if a URL target is given without an
+    `executor` — these are all setup problems, not "nothing found".
     """
     engine = tool_engine or ToolEngine()
-    path = _validate_path(job.target)
+
+    if _is_url(job.target):
+        if executor is None:
+            raise ValueError(
+                f"job.target {job.target!r} is a URL — an executor is required "
+                f"to download it (scope-checked) before it can be analyzed"
+            )
+        path = _download_to_temp_file(executor, job.target)
+    else:
+        path = _validate_path(job.target)
 
     findings: list[FindingOut] = []
     findings.extend(_check_secrets(engine, path))
     findings.extend(_check_unsafe_functions(engine, path))
 
     return JobResult(job_id=job.job_id, status="completed", findings=findings)
+
+
+def _is_url(target: str) -> bool:
+    return target.startswith("http://") or target.startswith("https://")
+
+
+def _download_to_temp_file(executor: ScopedExecutor, url: str) -> str:
+    data = executor.download(url)
+
+    # Keep the original filename where possible (shows up in finding
+    # descriptions / evidence) instead of a random temp name.
+    basename = Path(urlparse(url).path).name or "downloaded_binary"
+    tmp_dir = tempfile.mkdtemp(prefix="cart_binary_")
+    dest = Path(tmp_dir) / basename
+    dest.write_bytes(data)
+    return str(dest)
 
 
 def _validate_path(target: str) -> str:

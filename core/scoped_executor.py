@@ -49,9 +49,26 @@ class ScopedExecutor(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def download(self, url: str, max_bytes: int = 20_000_000) -> bytes:
+        """
+        Download a file's raw bytes from `url`, scope-checked the same way
+        as http_get (including the resolved-IP recheck). Used when a
+        discovered link points at a binary (an installer, firmware, an
+        app) that needs to be fetched before the binary agent can analyze
+        it — this is the ONLY sanctioned way to pull that file down.
+        Raises DownloadError if the response exceeds `max_bytes` or the
+        request fails.
+        """
+        raise NotImplementedError
+
 
 class ScopeViolation(Exception):
     """Raised when a target/IP is not within the authorized scope."""
+
+
+class DownloadError(Exception):
+    """Raised when download() fails or the remote file exceeds max_bytes."""
 
 
 class RealScopedExecutor(ScopedExecutor):
@@ -167,6 +184,28 @@ class RealScopedExecutor(ScopedExecutor):
                         to_visit.append((link, depth + 1))
 
         return pages
+
+    def download(self, url: str, max_bytes: int = 20_000_000) -> bytes:
+        self._guard_url(url)
+        try:
+            response = requests.get(
+                url, timeout=self._http_timeout, allow_redirects=False, stream=True
+            )
+        except requests.RequestException as exc:
+            raise DownloadError(f"failed to download {url!r}: {exc}") from exc
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=65_536):
+            total += len(chunk)
+            if total > max_bytes:
+                raise DownloadError(
+                    f"{url!r} exceeds the {max_bytes}-byte download cap — refusing to "
+                    f"keep downloading (avoids a huge/unbounded file stalling analysis)"
+                )
+            chunks.append(chunk)
+
+        return b"".join(chunks)
 
     @staticmethod
     def _extract_links(html: str, base_url: str) -> list[str]:

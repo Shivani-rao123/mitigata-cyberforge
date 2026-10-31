@@ -28,10 +28,14 @@ class MockScopedExecutor(ScopedExecutor):
         scan_result: dict | None = None,
         http_result: dict | None = None,
         crawl_result: list[dict] | None = None,
+        download_result: bytes | None = None,
+        raise_on_download: Exception | None = None,
     ) -> None:
         self._scan_result = scan_result
         self._http_result = http_result
         self._crawl_result = crawl_result
+        self._download_result = download_result
+        self._raise_on_download = raise_on_download
 
     def scan(self, target: str, allowed_ports: list[int] | None = None) -> dict:
         if self._scan_result is not None:
@@ -48,3 +52,8 @@ class MockScopedExecutor(ScopedExecutor):
         if self._crawl_result is not None:
             return self._crawl_result
         return []
+
+    def download(self, url: str, max_bytes: int = 20_000_000) -> bytes:
+        if self._raise_on_download is not None:
+            raise self._raise_on_download
+        return self._download_result if self._download_result is not None else b""
