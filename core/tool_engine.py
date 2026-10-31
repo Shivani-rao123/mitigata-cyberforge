@@ -77,8 +77,25 @@ class ToolEngine:
     def has_tool(self, tool_name: str) -> bool:
         """Whether `tool_name` has an entry in tools.yaml — lets a caller
         check for an optional variant (e.g. a "{tool}_subnet" config)
-        before using it, without triggering ToolNotConfigured itself."""
+        before using it, without triggering ToolNotConfigured itself.
+
+        Does NOT check whether the binary is actually installed on this
+        machine — a tool can be fully configured here and still raise
+        ToolNotInstalled from run(). Use is_installed() for that."""
         return tool_name in self._config
+
+    def is_installed(self, tool_name: str) -> bool:
+        """Whether `tool_name` is both configured AND its binary is
+        actually on this machine's PATH right now — what run() itself
+        checks before invoking it, exposed here so a caller (e.g. the
+        dashboard) can show accurate "is katana actually available"
+        status instead of assuming every configured tool is present.
+        False for an unconfigured tool name rather than raising, since
+        "not installed" and "not configured" both mean the same thing
+        to a caller just deciding what to show/offer."""
+        if tool_name not in self._config:
+            return False
+        return shutil.which(self._config[tool_name]["binary"]) is not None
 
     def parse(self, tool_name: str, raw_output: str):
         """Look up and call the configured parser for this tool's output."""

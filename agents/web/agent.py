@@ -39,6 +39,21 @@ endpoints and forms it finds, and flags common issues:
     not a silent "give up"). Surfaced as a (non-security) finding rather
     than a silent downgrade, so a report reader can tell "found nothing"
     apart from "couldn't look as thoroughly as it could have."
+  - secret_in_file_found        — a hardcoded secret found in a crawled
+    plain-text/data file that ISN'T JS (a .txt handover note, a .env, a
+    .bak config, a .log, ...) — e.g. a file-manager-style directory
+    listing someone can download from. Regex-scanned against the same
+    common/secret_patterns.py patterns js_secret_found uses, kept as a
+    separate finding_type since the discovery path differs (see
+    TEXT_SECRET_SCAN_EXTENSIONS). Deliberately does NOT scan ordinary
+    HTML page bodies — see that constant's comment.
+  - redirect_followed            — informational: a crawled page was only
+    reached after following one or more redirects (http->https, a bare
+    IP landing on its canonical vhost, a gate page in front of a
+    dashboard/file-manager app, ...). core/scoped_executor.py's crawl()
+    follows these itself now (bounded hops, each hop scope-checked) —
+    this just makes that fact visible in the report instead of the final
+    content silently showing up with no explanation of how it was reached.
 
 Never calls `requests` directly — all HTTP access goes through the
 injected `executor` (core.scoped_executor.ScopedExecutor), which enforces
@@ -121,6 +136,34 @@ BINARY_EXTENSIONS = (
     ".sh",
 )
 
+# Extensions that suggest a crawled link is a plain-text/data file worth
+# regex-scanning for hardcoded secrets — the thing a file-manager-style
+# listing (a dynamic directory of downloadable files, e.g. a "File
+# Manager" app) commonly exposes: handover notes, exported configs,
+# backups, logs, structured data dumps. Deliberately disjoint from
+# BINARY_EXTENSIONS above (those go to the binary agent instead) and
+# deliberately NOT including .html/.htm — scanning a normal HTML page's
+# full body for SECRET_PATTERNS is noisy (marketing/example copy, embedded
+# sample code) and is not done here; js_secret_found already covers the
+# one HTML-adjacent case that matters (JS bundles — see _scan_js_bundles).
+TEXT_SECRET_SCAN_EXTENSIONS = (
+    ".txt",
+    ".log",
+    ".conf",
+    ".cfg",
+    ".ini",
+    ".env",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".xml",
+    ".csv",
+    ".md",
+    ".properties",
+    ".bak",
+    ".sql",
+)
+
 # Unique enough that it won't collide with real page content.
 REFLECTED_PROBE_MARKER = "CARTPROBE_6f1e9c"
 
@@ -157,10 +200,12 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
     seen_binary_links: set[str] = set()
 
     for page in pages:
+        findings.extend(_check_redirect_followed(page))
         findings.extend(_check_sensitive_path(page))
         findings.extend(_check_login_forms(page))
         findings.extend(_check_directory_listing(page))
         findings.extend(_check_reflected_input(page, executor))
+        findings.extend(_check_file_secrets(page))
 
         for link in _extract_binary_links(page):
             if link in seen_binary_links:
@@ -347,6 +392,79 @@ def _matches_sensitive_path(path: str, sensitive: str) -> bool:
     p = path.rstrip("/")
     s = sensitive.rstrip("/")
     return p == s or p.startswith(s + "/")
+
+
+def _check_redirect_followed(page: dict) -> list[FindingOut]:
+    """Informational note when a crawled page was only reached by
+    following a redirect (see core/scoped_executor.py's crawl()) — a
+    report reader should know this content came from a different URL
+    than the one actually requested (a bare IP landing on a vhost, a
+    dashboard/file-manager app sitting behind a redirect, etc.), not
+    just see it show up under the final URL with no explanation."""
+    chain = page.get("redirect_chain")
+    if not chain or len(chain) < 2:
+        return []
+    requested, final = chain[0], chain[-1]
+    return [
+        FindingOut(
+            finding_type="redirect_followed",
+            description=(
+                f"{requested} redirected to {final}"
+                + (f" ({len(chain) - 1} hop(s))" if len(chain) > 2 else "")
+                + " — crawled content reflects the final destination"
+            ),
+            host=_host(final),
+            service_port=_port(final),
+            evidence=Evidence(kind="redirect_chain", summary=" -> ".join(chain)),
+        )
+    ]
+
+
+def _check_file_secrets(page: dict) -> list[FindingOut]:
+    """
+    Regex-scans a crawled plain-text/data file's body (see
+    TEXT_SECRET_SCAN_EXTENSIONS — a .txt handover note, a .env, a .bak
+    config, a .log, ...) against common/secret_patterns.py's SECRET_PATTERNS
+    — the same patterns js_secret_found and the binary agent's gitleaks
+    fallback already use. Distinct finding_type from js_secret_found
+    (secret_in_file_found) since this comes from a different discovery
+    path (any linked file the native crawler fetched, not specifically a
+    JS bundle) and a report reader should be able to tell them apart.
+
+    Deliberately restricted to TEXT_SECRET_SCAN_EXTENSIONS — an ordinary
+    crawled HTML page's body is NOT scanned here (see that constant's
+    comment for why).
+    """
+    if page.get("status", 0) != 200:
+        return []  # nothing was actually served (404/403/etc) — no body worth scanning
+    if not urlparse(page["url"]).path.lower().endswith(TEXT_SECRET_SCAN_EXTENSIONS):
+        return []
+
+    body = page.get("body", "")
+    if not body:
+        return []
+
+    findings: list[FindingOut] = []
+    for secret_type, (pattern, description) in SECRET_PATTERNS.items():
+        match = pattern.search(body)
+        if not match:
+            continue
+        findings.append(
+            FindingOut(
+                finding_type="secret_in_file_found",
+                description=(
+                    f"Hardcoded secret ({description}) found in a plain-text "
+                    f"file served at {page['url']}"
+                ),
+                host=_host(page["url"]),
+                service_port=_port(page["url"]),
+                evidence=Evidence(
+                    kind="file_secret",
+                    summary=f"{description}: {redact(match.group(0))}",
+                ),
+            )
+        )
+    return findings
 
 
 def _check_sensitive_path(page: dict) -> list[FindingOut]:

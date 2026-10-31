@@ -14,7 +14,7 @@ import ipaddress
 import socket
 from abc import ABC, abstractmethod
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -89,6 +89,19 @@ _MAX_RESPONSE_BYTES = 1_000_000  # 1 MB — generous for a real page/form,
 # small enough that decoding + regex work on it stays fast regardless of
 # content (see common/html_extract.py's own bounds for the regex side of
 # this same defense-in-depth).
+
+
+# Real sites commonly redirect (http->https, bare IP->canonical vhost,
+# a landing page->a dashboard/file-manager app behind it — exactly the
+# "it can be redirected also" case). crawl() follows these itself (see
+# RealScopedExecutor._fetch_following_redirects) since http_get()'s own
+# contract deliberately does NOT (see its interface docstring above) —
+# bounded to a small number of hops so a redirect loop (A->B->A) can't
+# hang a crawl, matching the spirit of MAX_LINKS_PER_PAGE etc. in
+# common/html_extract.py: fail safe, don't hang.
+_MAX_REDIRECT_HOPS = 5
+
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
 def _bounded_get(url: str, timeout: int) -> requests.Response:
@@ -288,9 +301,23 @@ class RealScopedExecutor(ScopedExecutor):
                 continue  # out of scope — skip silently, already logged by _guard_url
 
             try:
-                response = _bounded_get(url, self._http_timeout)
+                response, redirect_chain = self._fetch_following_redirects(url)
             except requests.RequestException:
                 continue
+
+            final_url = redirect_chain[-1] if redirect_chain else url
+            visited.add(final_url)
+
+            # A redirect on the very first fetch (the base_url itself) is
+            # the "bare IP redirects to its canonical vhost" case — widen
+            # same-site link-following to the host we actually landed on,
+            # or every link on the real site would be silently dropped as
+            # "off-host" for the rest of this crawl. A redirect found
+            # later, mid-crawl, does NOT widen it again — that would let
+            # an attacker-controlled page redirect the crawl's notion of
+            # "same site" somewhere unbounded.
+            if url == base_url and final_url != base_url:
+                base_host = urlparse(final_url).netloc
 
             # One bounded, truncated body feeds BOTH the stored page
             # record and link/form extraction — extraction never sees a
@@ -301,19 +328,67 @@ class RealScopedExecutor(ScopedExecutor):
             # copy of the same text.
             body = _decoded_text(response)[:50_000]
             page = {
-                "url": url,
+                "url": final_url,
                 "status": response.status_code,
                 "body": body,
                 "forms": extract_forms(body),
             }
+            if redirect_chain:
+                # [requested_url, hop_2, ..., final_url] — lets a caller
+                # (agents/web/agent.py) note "this was reached via a
+                # redirect" in a finding, instead of that fact silently
+                # vanishing once the content lands under final_url.
+                page["redirect_chain"] = [url, *redirect_chain]
             pages.append(page)
 
             if depth < self._crawl_max_depth:
-                for link in extract_links(body, url):
+                for link in extract_links(body, final_url):
                     if urlparse(link).netloc == base_host and link not in visited:
                         to_visit.append((link, depth + 1))
 
         return pages
+
+    def _fetch_following_redirects(
+        self, url: str, max_hops: int = _MAX_REDIRECT_HOPS
+    ) -> tuple[requests.Response, list[str]]:
+        """
+        GETs `url`, following any 3xx Location header up to `max_hops`
+        times — each hop re-guarded against scope exactly like any other
+        crawled link (so a redirect can never be used to silently leave
+        scope), and each hop added to the returned chain so the caller
+        can tell a redirect happened at all.
+
+        Returns (final_response, chain) where chain is the list of URLs
+        actually followed (NOT including the original `url, only hops
+        taken after it); chain is empty if `url` didn't redirect, in
+        which case final_response is just the direct response to `url`.
+
+        Stops and returns the last response fetched — even if it's still
+        a redirect — if: the Location header is missing/unresolvable,
+        the target is out of scope, or max_hops is exhausted. A stalled
+        redirect chain is surfaced as a page with that 3xx status rather
+        than failing the whole crawl.
+        """
+        chain: list[str] = []
+        current_url = url
+        response = _bounded_get(current_url, self._http_timeout)
+
+        hops = 0
+        while response.status_code in _REDIRECT_STATUSES and hops < max_hops:
+            location = response.headers.get("Location")
+            if not location:
+                break
+
+            next_url = urljoin(current_url, location)
+            if not self._guard_url(next_url, raise_on_violation=False):
+                break  # out of scope — stop here, don't follow off-scope (logged by _guard_url)
+
+            current_url = next_url
+            response = _bounded_get(current_url, self._http_timeout)
+            chain.append(current_url)
+            hops += 1
+
+        return response, chain
 
     # ------------------------------------------------------------------
     # crawl_js() — katana-backed crawl (FR-2 upgrade over crawl()).

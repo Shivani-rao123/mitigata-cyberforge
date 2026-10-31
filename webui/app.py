@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from flask import Flask, render_template, request
 
+from core.tool_engine import ToolEngine
 from webui.orchestrate import run_full_chain
 
 app = Flask(__name__)
@@ -35,8 +36,11 @@ FINDING_SEVERITY = {
     "default_creds_found": "high",
     "reflected_input": "high",
     "js_secret_found": "high",  # a secret hardcoded in a JS bundle is just as real as one in a binary
+    "secret_in_file_found": "high",  # a secret in a crawled plain-text/config/log file (not JS) —
+    # e.g. an exposed handover note, .env, or backup config found via a crawled link
     "sensitive_endpoint_found": "medium",
     "directory_listing_enabled": "medium",
+    "redirect_followed": "info",  # operational note: the crawl followed a redirect to a new host/path
     "missing_security_header": "low",
     "js_endpoint_found": "low",  # attack-surface disclosure, not itself a proven weakness
     "open_port": "info",
@@ -51,7 +55,15 @@ def severity_filter(finding_type: str) -> str:
 
 @app.route("/", methods=["GET"])
 def index():
-    return render_template("index.html")
+    # Whether katana is ACTUALLY installed on this machine right now —
+    # not just configured in tools.yaml (every machine has that entry;
+    # far fewer have the binary). The form offers "katana only" as a
+    # crawler mode, and presenting that as a normal, always-available
+    # choice is misleading on a machine that doesn't have it installed —
+    # see ToolEngine.is_installed()'s docstring for the has_tool() vs
+    # is_installed() distinction this relies on.
+    katana_installed = ToolEngine().is_installed("katana")
+    return render_template("index.html", katana_installed=katana_installed)
 
 
 VALID_CRAWLER_MODES = ("auto", "requests", "katana")
@@ -62,19 +74,24 @@ def scan():
     target = request.form.get("target", "").strip()
     scope_raw = request.form.get("scope", "").strip()
     crawler = request.form.get("crawler", "auto").strip() or "auto"
+    katana_installed = ToolEngine().is_installed("katana")
 
     if not target:
-        return render_template("index.html", error="Target is required.")
+        return render_template("index.html", error="Target is required.", katana_installed=katana_installed)
 
     if crawler not in VALID_CRAWLER_MODES:
-        return render_template("index.html", error=f"Unknown crawler mode: {crawler!r}")
+        return render_template(
+            "index.html", error=f"Unknown crawler mode: {crawler!r}", katana_installed=katana_installed
+        )
 
     scope_cidrs = [c.strip() for c in scope_raw.split(",") if c.strip()] or None
 
     try:
         chain = run_full_chain(target, scope_cidrs=scope_cidrs, crawler=crawler)
     except Exception as exc:  # noqa: BLE001 — show it in the UI, not a stack trace
-        return render_template("index.html", error=f"Could not start scan: {exc}")
+        return render_template(
+            "index.html", error=f"Could not start scan: {exc}", katana_installed=katana_installed
+        )
 
     return render_template("results.html", chain=chain, target=target)
 
