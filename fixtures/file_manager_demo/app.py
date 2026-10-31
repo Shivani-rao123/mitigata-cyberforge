@@ -19,6 +19,11 @@ of the web agent (now all fixed):
   - the real, legitimate jQuery CDN script used to crash the entire web
     stage with an unhandled ScopeViolation the moment it was fetched
     (fixed: third-party scripts are now filtered out before fetching).
+  - a direct binary download with NO extension anywhere in its URL
+    (/download/a1b2c3d4) can't be caught by ANY extension check, however
+    it's extended -> core/scoped_executor.py's crawl() now sniffs actual
+    response content (magic bytes + Content-Type) and flags the page
+    itself (page["looks_binary"]) regardless of its URL shape.
 
 Used to live-verify (not just unit-test) that RealScopedExecutor.crawl()
 follows the redirect and that agents/web/agent.py's checks all fire on
@@ -52,9 +57,23 @@ def listing():
         <tr><td><a href="/filemanager/README.txt">README.txt</a></td></tr>
         <tr><td><a href="/filemanager/ops/netops-handover.txt">netops-handover.txt</a></td></tr>
         <tr><td><a href="/index.php?p=tools%2Fagent.exe&dl">agent.exe (query-string link)</a></td></tr>
+        <tr><td><a href="/download/a1b2c3d4">implant (no extension at all)</a></td></tr>
       </table>
     </body></html>
     """
+
+
+@app.route("/download/a1b2c3d4")
+def no_extension_binary():
+    # A direct download link with NO extension anywhere in the URL —
+    # just an opaque id, relying entirely on Content-Type + magic bytes
+    # (core/scoped_executor.py's _looks_like_binary) for detection, since
+    # there's no extension for _extract_binary_links() to match at all.
+    # This is the real-world shape directly confirmed by the user.
+    from flask import Response
+
+    body = b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 40  # real ELF header prefix
+    return Response(body, status=200, mimetype="application/octet-stream")
 
 
 @app.route("/filemanager/README.txt")

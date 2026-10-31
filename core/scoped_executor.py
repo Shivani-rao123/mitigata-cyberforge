@@ -165,6 +165,60 @@ def _decoded_text(response: requests.Response) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+# Signature bytes for common executable/archive formats, checked against
+# the start of a response body — the only reliable way to recognize a
+# compiled binary served with NO extension anywhere in its URL (a direct
+# download link like /download/a1b2c3d4, relying entirely on the server's
+# Content-Type/Content-Disposition, which themselves aren't always sent
+# or trustworthy). A URL-extension check (agents/web/agent.py's
+# BINARY_EXTENSIONS) can never catch this case no matter how it's
+# extended — there's no extension to look at. Not exhaustive (notably,
+# ISO9660/.dmg have no reliable signature at offset 0) but covers the
+# common pentest-relevant cases: PE/EXE/DLL, ELF, Mach-O, and
+# ZIP-container formats (plain .zip, .apk, .jar all share PK\x03\x04).
+_BINARY_MAGIC_BYTES: tuple[tuple[str, bytes], ...] = (
+    ("PE/EXE/DLL", b"MZ"),
+    ("ELF", b"\x7fELF"),
+    ("Mach-O (64-bit)", b"\xcf\xfa\xed\xfe"),
+    ("Mach-O (32-bit)", b"\xce\xfa\xed\xfe"),
+    ("Mach-O (universal/fat)", b"\xca\xfe\xba\xbe"),
+    ("ZIP/APK/JAR", b"PK\x03\x04"),
+    ("RPM", b"\xed\xab\xee\xdb"),
+    ("Debian package (ar archive)", b"!<arch>\n"),
+    ("gzip", b"\x1f\x8b"),
+    ("7-Zip", b"7z\xbc\xaf\x27\x1c"),
+)
+
+# Content-Type values that mean "this is a binary download" even when the
+# magic-byte check above doesn't recognize the specific format (e.g. a
+# format with no reliable header signature, or truncated below it).
+_BINARY_CONTENT_TYPES = (
+    "application/octet-stream",
+    "application/x-executable",
+    "application/x-elf",
+    "application/x-sharedlib",
+    "application/x-msdownload",
+    "application/x-dosexec",
+    "application/x-mach-binary",
+    "application/vnd.debian.binary-package",
+    "application/x-rpm",
+    "application/vnd.android.package-archive",
+    "application/x-apple-diskimage",
+)
+
+
+def _looks_like_binary(raw_bytes: bytes, content_type: str) -> bool:
+    """True if `raw_bytes` starts with a recognized executable/archive
+    signature, OR the response declared itself as one of
+    _BINARY_CONTENT_TYPES — either signal alone is enough, since neither
+    is reliable on its own (a server can mislabel Content-Type; a format
+    can lack a magic-byte signature)."""
+    if any(raw_bytes.startswith(sig) for _name, sig in _BINARY_MAGIC_BYTES):
+        return True
+    declared = content_type.split(";")[0].strip().lower()
+    return declared in _BINARY_CONTENT_TYPES
+
+
 class RealScopedExecutor(ScopedExecutor):
     def __init__(
         self,
@@ -326,12 +380,36 @@ class RealScopedExecutor(ScopedExecutor):
             # compose into one consistent size ceiling instead of the
             # extraction step accidentally running on a larger, untruncated
             # copy of the same text.
+            raw_bytes = getattr(response, "_bounded_bytes", b"")
+            content_type = response.headers.get("Content-Type", "")
+            looks_binary = _looks_like_binary(raw_bytes, content_type)
+
+            # A binary response isn't worth decoding-as-text or scanning
+            # for links/forms (best case wasted work, worst case mangled
+            # nonsense from decoding arbitrary bytes as UTF-8) — skip
+            # straight to recording it as a binary page, source of truth
+            # being the real bytes already fetched, not a lossy re-decode.
+            if looks_binary:
+                page = {
+                    "url": final_url,
+                    "status": response.status_code,
+                    "body": "",
+                    "forms": [],
+                    "headers": dict(response.headers),
+                    "looks_binary": True,
+                }
+                if redirect_chain:
+                    page["redirect_chain"] = [url, *redirect_chain]
+                pages.append(page)
+                continue  # no links/forms to extract from binary content
+
             body = _decoded_text(response)[:50_000]
             page = {
                 "url": final_url,
                 "status": response.status_code,
                 "body": body,
                 "forms": extract_forms(body),
+                "headers": dict(response.headers),
             }
             if redirect_chain:
                 # [requested_url, hop_2, ..., final_url] — lets a caller

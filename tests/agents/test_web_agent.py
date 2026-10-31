@@ -323,6 +323,59 @@ def test_non_binary_links_do_not_trigger_follow_up_jobs():
     assert result.follow_up_jobs == []
 
 
+def test_binary_response_with_no_extension_in_url_still_triggers_follow_up():
+    # core/scoped_executor.py's crawl() sets looks_binary=True on a page
+    # whose content sniffs as a real binary (magic bytes / Content-Type)
+    # regardless of its URL — e.g. a direct /download/<id> link with no
+    # extension anywhere. _extract_binary_links() can't catch this (no
+    # extension to match), so run() checks page["looks_binary"] directly.
+    pages = [
+        {
+            "url": "http://10.10.10.5:80/download/a1b2c3d4",
+            "status": 200,
+            "body": "",
+            "forms": [],
+            "looks_binary": True,
+        }
+    ]
+    executor = MockScopedExecutor(
+        crawl_result=pages, http_result={"status": 200, "headers": ALL_HEADERS, "body": ""}
+    )
+    result = run(_job(), executor)
+
+    binary_jobs = [j for j in result.follow_up_jobs if j["agent"] == "binary"]
+    assert len(binary_jobs) == 1
+    assert binary_jobs[0]["target"] == "http://10.10.10.5:80/download/a1b2c3d4"
+
+
+def test_looks_binary_and_href_binary_link_on_same_page_both_fire_once_each():
+    pages = [
+        {
+            "url": "http://10.10.10.5:80/download/a1b2c3d4",  # the page itself is a binary
+            "status": 200,
+            "body": "",
+            "forms": [],
+            "looks_binary": True,
+        },
+        {
+            "url": "http://10.10.10.5:80/",
+            "status": 200,
+            "body": '<a href="/files/tool.exe">tool</a>',  # an extension-based link too
+            "forms": [],
+        },
+    ]
+    executor = MockScopedExecutor(
+        crawl_result=pages, http_result={"status": 200, "headers": ALL_HEADERS, "body": ""}
+    )
+    result = run(_job(), executor)
+
+    targets = {j["target"] for j in result.follow_up_jobs if j["agent"] == "binary"}
+    assert targets == {
+        "http://10.10.10.5:80/download/a1b2c3d4",
+        "http://10.10.10.5:80/files/tool.exe",
+    }
+
+
 def test_empty_crawl_still_runs_header_check_only():
     executor = MockScopedExecutor(
         crawl_result=[], http_result={"status": 200, "headers": ALL_HEADERS, "body": ""}

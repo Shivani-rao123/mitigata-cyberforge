@@ -241,7 +241,17 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
         findings.extend(_check_reflected_input(page, executor))
         findings.extend(_check_file_secrets(page))
 
-        for link in _extract_binary_links(page):
+        binary_links = _extract_binary_links(page)
+        if page.get("looks_binary"):
+            # A link reached ONLY via Content-Type/magic-byte sniffing
+            # (core/scoped_executor.py's crawl()) — no extension anywhere
+            # in its URL at all (a direct /download/<id>-style link), so
+            # _extract_binary_links()'s extension matching can never find
+            # it. The crawl already fetched and classified it; this is
+            # just the page itself being a binary, not a link ON it.
+            binary_links.append(page["url"])
+
+        for link in binary_links:
             if link in seen_binary_links:
                 continue
             seen_binary_links.add(link)
