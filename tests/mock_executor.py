@@ -25,6 +25,15 @@ class MockScopedExecutor(ScopedExecutor):
     `http_get()` to return something different depending on the URL it's
     called with (e.g. the web agent's reflected-input probe vs. its
     header check hitting the same mock in one run).
+
+    `crawl_js` is intentionally NOT defined by default — matching a real
+    executor that doesn't offer katana-backed crawling, this instance
+    simply has no `crawl_js` attribute at all (hasattr is False), which
+    is exactly what agents/web/agent.py's "auto" crawler mode needs to
+    see to silently use crawl() with no fallback note. Pass either
+    `crawl_js_result` or `raise_on_crawl_js` to opt THIS instance into
+    having the method at all, for tests that specifically exercise the
+    katana path.
     """
 
     def __init__(
@@ -33,6 +42,8 @@ class MockScopedExecutor(ScopedExecutor):
         http_result: dict | None = None,
         http_get_fn=None,
         crawl_result: list[dict] | None = None,
+        crawl_js_result: dict | None = None,
+        raise_on_crawl_js: Exception | None = None,
         download_result: bytes | None = None,
         raise_on_download: Exception | None = None,
     ) -> None:
@@ -42,6 +53,22 @@ class MockScopedExecutor(ScopedExecutor):
         self._crawl_result = crawl_result
         self._download_result = download_result
         self._raise_on_download = raise_on_download
+
+        self._crawl_js_result = crawl_js_result
+        self._raise_on_crawl_js = raise_on_crawl_js
+        if crawl_js_result is not None or raise_on_crawl_js is not None:
+            # Attach as an instance attribute only when a test actually
+            # configured it — see the class docstring for why this isn't
+            # just always-defined.
+            self.crawl_js = self._crawl_js_impl
+
+    def _crawl_js_impl(self, base_url: str) -> dict:
+        if self._raise_on_crawl_js is not None:
+            raise self._raise_on_crawl_js
+        return self._crawl_js_result if self._crawl_js_result is not None else {
+            "pages": [],
+            "js_findings": [],
+        }
 
     def scan(self, target: str, allowed_ports: list[int] | None = None) -> dict:
         if self._scan_result is not None:

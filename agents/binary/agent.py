@@ -4,10 +4,18 @@ agents/binary/agent.py
 Binary analysis agent (FR-3). Static checks only — nothing here executes
 the target file. Two checks:
 
-  1. Hardcoded secrets — extracts readable strings from the file (via the
-     `strings` tool) and regex-matches them against known secret shapes
-     (AWS keys, private key headers, generic api_key/secret/password
-     assignments, Slack tokens).
+  1. Hardcoded secrets — prefers gitleaks (hundreds of vetted rules for
+     cloud/CI/VCS credentials, private keys, JWTs, DB connection strings,
+     plus entropy-based detection for secrets that match no known
+     pattern) via the config-driven `gitleaks` tool entry. If gitleaks
+     isn't installed/configured, falls back to extracting readable
+     strings (via the `strings` tool) and regex-matching them against a
+     small hand-written set of secret shapes (AWS keys, private key
+     headers, generic api_key/secret/password assignments, Slack
+     tokens) — a real but much narrower net than gitleaks's. Either path
+     produces the same `hardcoded_secret` finding_type; the evidence
+     `kind` ("gitleaks_match" vs "strings_match") tells a report reader
+     which method actually found it.
 
   2. Unsafe function calls — for ELF binaries, lists the external
      (dynamically-linked) functions the binary calls (via `nm -D
@@ -34,8 +42,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
+from common.redact import redact
 from core.scoped_executor import ScopedExecutor
-from core.tool_engine import ToolEngine
+from core.tool_engine import ToolEngine, ToolNotConfigured, ToolNotInstalled
 
 # name -> (compiled regex, human-readable description)
 SECRET_PATTERNS: dict[str, tuple[re.Pattern, str]] = {
@@ -130,6 +139,52 @@ def _validate_path(target: str) -> str:
 
 
 def _check_secrets(engine: ToolEngine, path: str) -> list[FindingOut]:
+    """Prefers gitleaks; falls back to the regex-based check below if
+    gitleaks isn't installed/configured on this machine. A gitleaks
+    failure for any OTHER reason (e.g. it ran but crashed, or produced
+    output that doesn't parse — core/parsers/gitleaks.py raises
+    ValueError for that rather than returning []) is NOT swallowed into
+    the same fallback: that would silently hide a real tool failure
+    behind a much weaker check and make "gitleaks is broken" look
+    identical to "gitleaks found nothing", which is exactly the kind of
+    false-negative this project's Verify/False-alarm scoring targets
+    want to avoid."""
+    try:
+        return _check_secrets_gitleaks(engine, path)
+    except (ToolNotInstalled, ToolNotConfigured):
+        return _check_secrets_regex(engine, path)
+
+
+def _check_secrets_gitleaks(engine: ToolEngine, path: str) -> list[FindingOut]:
+    raw = engine.run("gitleaks", target=path)
+    leaks = engine.parse("gitleaks", raw)
+
+    findings: list[FindingOut] = []
+    seen: set[str] = set()  # avoid duplicate findings for the same matched secret
+
+    for leak in leaks:
+        dedup_key = f"{leak['rule']}:{leak['secret']}"
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        location = f" ({leak['file']}:{leak['line']})" if leak.get("file") else ""
+        findings.append(
+            FindingOut(
+                finding_type="hardcoded_secret",
+                description=f"{leak['description']} found in {Path(path).name}{location}",
+                host=None,
+                evidence=Evidence(
+                    kind="gitleaks_match",
+                    summary=f"{leak['rule']}: {redact(leak['secret'])}",
+                ),
+            )
+        )
+
+    return findings
+
+
+def _check_secrets_regex(engine: ToolEngine, path: str) -> list[FindingOut]:
     raw = engine.run("strings", target=path)
     parsed = engine.parse("strings", raw)
     strings_list = parsed.get("strings", [])
@@ -154,7 +209,7 @@ def _check_secrets(engine: ToolEngine, path: str) -> list[FindingOut]:
                         host=None,
                         evidence=Evidence(
                             kind="strings_match",
-                            summary=f"{secret_type}: {_redact(matched_text)}",
+                            summary=f"{secret_type}: {redact(matched_text)}",
                         ),
                     )
                 )
@@ -190,11 +245,3 @@ def _check_unsafe_functions(engine: ToolEngine, path: str) -> list[FindingOut]:
             )
 
     return findings
-
-
-def _redact(secret: str, keep: int = 4) -> str:
-    """Show enough of a matched secret to confirm the finding without
-    putting the full value in evidence/reports."""
-    if len(secret) <= keep * 2:
-        return "*" * len(secret)
-    return f"{secret[:keep]}{'*' * (len(secret) - keep * 2)}{secret[-keep:]}"

@@ -46,3 +46,95 @@ tools:
     timeout_seconds: 30
     output_format: text
     parser: core.parsers.nm_output:parse
+
+  # --- Web surface (FR-2) — optional upgrades over ScopedExecutor's
+  # native requests+regex crawl(). Both degrade gracefully: if the binary
+  # isn't installed, ToolEngine raises ToolNotInstalled and the caller
+  # (agents/web/agent.py) falls back to the always-available native path
+  # instead of failing the whole job. Neither entry's exact flags/output
+  # schema was verified against a live install (no network access in the
+  # build environment to install either binary) — confirm against
+  # `katana -version` / `gitleaks version` before trusting this in a real
+  # run, and see the caveat notes in core/parsers/katana.py and
+  # core/parsers/gitleaks.py.
+
+  katana:
+    binary: katana
+    # -jsonl:   JSON Lines output, one object per discovered
+    #           endpoint/response — what core/parsers/katana.py expects.
+    # -silent:  suppress katana's banner/progress noise from stdout.
+    # -d 2:     crawl depth, matches ScopedExecutor's native
+    #           crawl_max_depth default.
+    # -jsluice: pull endpoints/secrets directly out of JS bundle source —
+    #           the thing a plain requests+regex crawler can't do at all,
+    #           since it never executes or statically analyzes <script
+    #           src=...> as code, only as opaque link targets.
+    # -timeout 10: per-request timeout, seconds.
+    #
+    # Deliberately NOT included: -headless (full JS execution via a
+    # bundled Chromium). It gives the most complete picture of a
+    # client-side-rendered SPA's real DOM, but needs a Chromium binary on
+    # the host and is slower. Add it to the command list below once
+    # that's confirmed available in your run environment — -jsluice alone
+    # already recovers most of what's hiding in a JS bundle without it.
+    command:
+      [
+        "katana",
+        "-u",
+        "{target}",
+        "-jsonl",
+        "-silent",
+        "-d",
+        "2",
+        "-jsluice",
+        "-timeout",
+        "10",
+      ]
+    timeout_seconds: 180
+    output_format: json_lines
+    parser: core.parsers.katana:parse
+
+  # --- Secret scanning (used by FR-3's binary agent) — preferred over
+  # the agent's built-in 4-pattern regex set when installed: gitleaks
+  # ships hundreds of vetted rules (cloud provider keys, CI/CD tokens,
+  # database connection strings, many private-key formats, JWTs, ...)
+  # plus entropy-based detection for secrets that don't match any known
+  # pattern — all of which this project's hand-written regex set misses.
+  # Chosen over trufflehog specifically because gitleaks is purely static
+  # (pattern/entropy matching against the given file) — it makes no
+  # network calls of its own, unlike trufflehog's optional live
+  # credential-verification mode, which would mean a "secret scanner"
+  # silently reaching out to third-party APIs outside this project's
+  # scope-guarded executor.
+
+  gitleaks:
+    binary: gitleaks
+    # detect:        gitleaks's static scan mode.
+    # --no-git:      scan {target} as plain file(s), not as a git repo —
+    #                a downloaded binary/firmware blob isn't one.
+    # --report-format json / --report-path /dev/stdout: JSON to stdout,
+    #                what core/parsers/gitleaks.py expects. Relies on
+    #                /dev/stdout resolving to this process's own captured
+    #                stdout pipe (true on Linux) — switch to a real temp
+    #                file + read-back here if gitleaks is ever run on a
+    #                platform where that doesn't hold.
+    # --exit-code 0: don't treat "leaks found" as a process failure —
+    #                ToolEngine.run() doesn't check the exit code anyway,
+    #                but this keeps behavior obvious if that ever changes.
+    command:
+      [
+        "gitleaks",
+        "detect",
+        "--no-git",
+        "--source",
+        "{target}",
+        "--report-format",
+        "json",
+        "--report-path",
+        "/dev/stdout",
+        "--exit-code",
+        "0",
+      ]
+    timeout_seconds: 60
+    output_format: json
+    parser: core.parsers.gitleaks:parse

@@ -14,11 +14,18 @@ import ipaddress
 import socket
 from abc import ABC, abstractmethod
 from typing import Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
 
-from core.tool_engine import ToolEngine
+from common.html_extract import extract_forms, extract_links
+
+# ToolNotConfigured/ToolNotInstalled aren't used directly in this module
+# (crawl_js() lets them propagate rather than catching them — see its
+# docstring) but are re-exported here so a caller of crawl_js() can catch
+# them via `from core.scoped_executor import ToolNotInstalled` without
+# also having to know they actually live in core.tool_engine.
+from core.tool_engine import ToolEngine, ToolNotConfigured, ToolNotInstalled  # noqa: F401
 
 
 class ScopedExecutor(ABC):
@@ -69,6 +76,80 @@ class ScopeViolation(Exception):
 
 class DownloadError(Exception):
     """Raised when download() fails or the remote file exceeds max_bytes."""
+
+
+# Hard cap on raw response BYTES read off the wire, before any decoding
+# or regex work ever happens. Without this, requests.get(...) (non-
+# streaming) buffers the entire response into memory regardless of what
+# gets sliced off afterward — an in-scope-but-malicious/compromised
+# target could serve a multi-GB response and exhaust memory before a
+# single byte of truncation logic runs. Streamed + capped here instead,
+# the same technique download() already uses for the same reason.
+_MAX_RESPONSE_BYTES = 1_000_000  # 1 MB — generous for a real page/form,
+# small enough that decoding + regex work on it stays fast regardless of
+# content (see common/html_extract.py's own bounds for the regex side of
+# this same defense-in-depth).
+
+
+def _bounded_get(url: str, timeout: int) -> requests.Response:
+    """GET `url` with the connection kept streaming, abandoned (closed)
+    the moment _MAX_RESPONSE_BYTES is read. Returns a real
+    requests.Response whose .raw has been drained up to that cap —
+    callers read bytes via _bounded_bytes(), never response.content
+    directly (that would try to keep reading the live, possibly-huge
+    stream)."""
+    response = requests.get(url, timeout=timeout, allow_redirects=False, stream=True)
+    response._bounded_bytes = _read_capped(response, _MAX_RESPONSE_BYTES)
+    return response
+
+
+def _read_capped(response: requests.Response, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=65_536):
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= max_bytes:
+            break
+    response.close()  # stop reading the socket — we may have left data unread on purpose
+    return b"".join(chunks)[:max_bytes]
+
+
+def _decoded_text(response: requests.Response) -> str:
+    """
+    Decodes the (already byte-capped — see _bounded_get) response body,
+    preferring a real charset sniff over requests' own default.
+
+    requests defaults to the HTTP charset-default of ISO-8859-1 for any
+    text/* response whose Content-Type header omits a charset= param —
+    it does NOT look at a page's <meta charset=...> tag. That's common
+    (plenty of real servers, and e.g. Python's own http.server, send
+    bare "text/html") and silently mojibakes any non-Latin-1 page (every
+    non-English site whose charset is only declared via the meta tag,
+    not the header) for every check downstream (form field names,
+    reflected-input matching, body content checks).
+
+    charset_normalizer (what modern `requests` uses internally for
+    response.apparent_encoding) looks at in-body signals like that and
+    gets it right far more often. Used directly here, on the capped raw
+    bytes, rather than through response.apparent_encoding/.text —
+    accessing either of those on a stream that was deliberately
+    abandoned early would try to keep reading past the cap.
+    """
+    raw = getattr(response, "_bounded_bytes", None)
+    if raw is None:
+        raw = response.content  # fallback path for a response _bounded_get() didn't build
+
+    try:
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(raw).best()
+        if best is not None:
+            return str(best)
+    except ImportError:
+        pass  # charset_normalizer not installed — fall through to utf-8
+
+    return raw.decode("utf-8", errors="replace")
 
 
 class RealScopedExecutor(ScopedExecutor):
@@ -136,16 +217,18 @@ class RealScopedExecutor(ScopedExecutor):
     def http_get(self, url: str) -> dict:
         self._guard_url(url)
         try:
-            response = requests.get(
-                url, timeout=self._http_timeout, allow_redirects=False
-            )
+            response = _bounded_get(url, self._http_timeout)
         except requests.RequestException as exc:
             return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
 
+        # Text is already bounded by _MAX_RESPONSE_BYTES on the raw-bytes
+        # side; the further [:50_000] char-level cap keeps evidence/report
+        # text short even for a dense multi-byte-encoded response that
+        # decodes to more characters than its byte count would suggest.
         return {
             "status": response.status_code,
             "headers": dict(response.headers),
-            "body": response.text[:50_000],  # cap body size, evidence stays bounded
+            "body": _decoded_text(response)[:50_000],
         }
 
     def crawl(self, base_url: str) -> list[dict]:
@@ -166,24 +249,83 @@ class RealScopedExecutor(ScopedExecutor):
                 continue  # out of scope — skip silently, already logged by _guard_url
 
             try:
-                response = requests.get(url, timeout=self._http_timeout, allow_redirects=False)
+                response = _bounded_get(url, self._http_timeout)
             except requests.RequestException:
                 continue
 
+            # One bounded, truncated body feeds BOTH the stored page
+            # record and link/form extraction — extraction never sees a
+            # larger string than what's actually kept, so the regex
+            # bounds in common/html_extract.py and this truncation
+            # compose into one consistent size ceiling instead of the
+            # extraction step accidentally running on a larger, untruncated
+            # copy of the same text.
+            body = _decoded_text(response)[:50_000]
             page = {
                 "url": url,
                 "status": response.status_code,
-                "body": response.text[:50_000],
-                "forms": self._extract_forms(response.text),
+                "body": body,
+                "forms": extract_forms(body),
             }
             pages.append(page)
 
             if depth < self._crawl_max_depth:
-                for link in self._extract_links(response.text, url):
+                for link in extract_links(body, url):
                     if urlparse(link).netloc == base_host and link not in visited:
                         to_visit.append((link, depth + 1))
 
         return pages
+
+    # ------------------------------------------------------------------
+    # crawl_js() — katana-backed crawl (FR-2 upgrade over crawl()).
+    # Optional: not part of the ScopedExecutor interface, so a caller
+    # must check for it (hasattr/getattr) rather than assume every
+    # executor has it — the MockScopedExecutor used in tests, and any
+    # future alternate executor, aren't required to implement it.
+    # ------------------------------------------------------------------
+
+    def crawl_js(self, base_url: str) -> dict:
+        """
+        Crawl `base_url` through katana instead of the native requests
+        crawler — sees links/endpoints/secrets that only exist inside
+        JS bundles (a plain requests+regex crawl can't execute or
+        statically analyze <script src> content). Returns
+        {"pages": [...same shape as crawl()...], "js_findings": [...]}.
+
+        Scope enforcement mirrors scan()'s defense-in-depth exactly:
+        `base_url` is guarded before katana ever runs, AND every page
+        and js_finding katana reports back is independently re-checked
+        against scope afterward (so a misconfigured/compromised katana
+        run, or katana itself following an off-host redirect, can't
+        smuggle an out-of-scope result into the findings). Anything that
+        fails the post-hoc check is dropped and logged, not raised —
+        same as _revalidate_resolved_hosts() for scan().
+
+        Raises ToolNotInstalled/ToolNotConfigured if katana isn't
+        available — callers (agents/web/agent.py) catch that and fall
+        back to crawl(), the always-available native path.
+        """
+        self._guard_url(base_url)
+
+        raw_output = self._engine.run("katana", target=base_url)
+        parsed = self._engine.parse("katana", raw_output)
+
+        safe_pages = [p for p in parsed.get("pages", []) if self._revalidate_url(p.get("url", ""))]
+        safe_findings = [
+            f for f in parsed.get("js_findings", []) if self._revalidate_url(f.get("source", ""))
+        ]
+
+        return {"pages": safe_pages, "js_findings": safe_findings}
+
+    def _revalidate_url(self, url: str) -> bool:
+        """Like _guard_url, but never raises — used to filter a tool's
+        results after the fact rather than gate a single outgoing
+        request. Anything without a resolvable in-scope host is dropped
+        silently (and logged) rather than failing the whole batch."""
+        if not url:
+            self._log_scope_check("<missing url>", False)
+            return False
+        return self._guard_url(url, raise_on_violation=False)
 
     def download(self, url: str, max_bytes: int = 20_000_000) -> bytes:
         self._guard_url(url)
@@ -206,28 +348,6 @@ class RealScopedExecutor(ScopedExecutor):
             chunks.append(chunk)
 
         return b"".join(chunks)
-
-    @staticmethod
-    def _extract_links(html: str, base_url: str) -> list[str]:
-        import re
-        hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
-        return [urljoin(base_url, h) for h in hrefs]
-
-    @staticmethod
-    def _extract_forms(html: str) -> list[dict]:
-        import re
-        forms = []
-        for form_match in re.finditer(r"<form[^>]*>(.*?)</form>", html, re.IGNORECASE | re.DOTALL):
-            form_html = form_match.group(0)
-            action_match = re.search(r'action=["\']([^"\']*)["\']', form_html, re.IGNORECASE)
-            method_match = re.search(r'method=["\']([^"\']*)["\']', form_html, re.IGNORECASE)
-            inputs = re.findall(r'<input[^>]*name=["\']([^"\']+)["\']', form_html, re.IGNORECASE)
-            forms.append({
-                "action": action_match.group(1) if action_match else "",
-                "method": (method_match.group(1) if method_match else "get").lower(),
-                "inputs": inputs,
-            })
-        return forms
 
     # ------------------------------------------------------------------
     # internal — scope guards

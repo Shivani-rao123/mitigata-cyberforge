@@ -19,6 +19,19 @@ endpoints and forms it finds, and flags common issues:
     small set of security-relevant response headers.
   - directory_listing_enabled   — a response that looks like an
     autoindex / directory-listing page.
+  - js_secret_found             — a hardcoded secret pulled directly out
+    of a JS bundle's source (katana's -jsluice mode only — the native
+    requests+regex crawl can never see this, since it never fetches
+    <script src> as code).
+  - js_endpoint_found           — an API endpoint referenced only inside
+    JS source, not in any server-rendered HTML — exactly the "attack
+    surface a plain crawler can't see on a JS/React/TS SPA" gap (katana
+    -jsluice only).
+  - crawler_fallback            — informational: the preferred JS-aware
+    crawler (katana) wasn't available/usable, so this run fell back to
+    the native crawler. Surfaced as a (non-security) finding rather than
+    a silent downgrade, so a report reader can tell "found nothing" apart
+    from "couldn't look as thoroughly as it could have."
 
 Never calls `requests` directly — all HTTP access goes through the
 injected `executor` (core.scoped_executor.ScopedExecutor), which enforces
@@ -28,15 +41,30 @@ Also closes the coordination loop described in agents/binary/agent.py's
 docstring (FR-4): if crawling turns up a link that looks like a
 downloadable binary, this agent hands it off as a follow-up binary-agent
 job instead of trying to analyze it itself.
+
+Crawler selection: `job.context.get("crawler")` controls which backend is
+used —
+  - "auto" (default): try executor.crawl_js() (katana) if the executor
+    exposes it; on ToolNotInstalled/ToolNotConfigured/a subprocess
+    timeout, silently fall back to executor.crawl() (the native,
+    always-available path) and record a `crawler_fallback` finding.
+  - "requests": always use executor.crawl() — skips katana entirely,
+    even if available (useful for a fast/offline run).
+  - "katana": always use executor.crawl_js() — if it's unavailable, the
+    error propagates instead of silently falling back (an explicit
+    request for the JS-aware crawl should fail loudly, not degrade
+    quietly).
 """
 
 from __future__ import annotations
 
-import re
+import subprocess
 from urllib.parse import urljoin, urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
-from core.scoped_executor import ScopedExecutor
+from common.html_extract import extract_links
+from common.redact import redact
+from core.scoped_executor import ScopedExecutor, ToolNotConfigured, ToolNotInstalled
 
 # Paths worth a dedicated look even if nothing else about them is odd.
 # Matched against both the exact path and as a parent of deeper paths
@@ -84,10 +112,12 @@ BINARY_EXTENSIONS = (
     ".sh",
 )
 
-HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
-
 # Unique enough that it won't collide with real page content.
 REFLECTED_PROBE_MARKER = "CARTPROBE_6f1e9c"
+
+# Errors that mean "katana isn't usable right now" — in "auto" mode these
+# trigger a fallback to the native crawler instead of failing the job.
+_KATANA_UNAVAILABLE_ERRORS = (ToolNotInstalled, ToolNotConfigured, subprocess.TimeoutExpired)
 
 
 def run(job: Job, executor: ScopedExecutor) -> JobResult:
@@ -101,11 +131,11 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
     the network directly.
     """
     base_url = _to_base_url(job.target)
+    crawler_mode = job.context.get("crawler", "auto")
 
-    pages = executor.crawl(base_url)
+    pages, js_findings, findings = _crawl(executor, base_url, crawler_mode)
+
     header_response = executor.http_get(base_url)
-
-    findings: list[FindingOut] = []
     findings.extend(_check_missing_headers(base_url, header_response))
 
     follow_up_jobs: list[dict] = []
@@ -129,12 +159,78 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
                 }
             )
 
+    for js_finding in js_findings:
+        findings.extend(_check_js_finding(js_finding, base_url))
+
     return JobResult(
         job_id=job.job_id,
         status="completed",
         findings=findings,
         follow_up_jobs=follow_up_jobs,
     )
+
+
+def _crawl(
+    executor: ScopedExecutor, base_url: str, crawler_mode: str
+) -> tuple[list[dict], list[dict], list[FindingOut]]:
+    """Returns (pages, js_findings, findings) — `findings` only ever
+    carries the crawler_fallback note (or is empty), kept separate from
+    the per-page checks below for clarity.
+
+    `crawl_js` is deliberately NOT part of the ScopedExecutor interface
+    (see core/scoped_executor.py) — an executor either has it or doesn't,
+    checked here with hasattr rather than assumed. That distinction
+    matters for the crawler_fallback finding below: an executor that
+    structurally doesn't offer JS-aware crawling at all (hasattr False)
+    is a normal, expected shape, not worth a note every single run; an
+    executor that DOES offer it but couldn't use it THIS run (katana
+    missing/misconfigured/timed out) is the case worth flagging.
+    """
+    if crawler_mode not in ("auto", "requests", "katana"):
+        raise ValueError(
+            f"job.context['crawler'] must be 'auto', 'requests', or 'katana', "
+            f"got {crawler_mode!r}"
+        )
+
+    if crawler_mode == "requests":
+        return executor.crawl(base_url), [], []
+
+    has_js_crawl = hasattr(executor, "crawl_js")
+
+    if crawler_mode == "katana":
+        if not has_js_crawl:
+            raise ToolNotInstalled(
+                "crawler='katana' was explicitly requested but this executor "
+                "doesn't implement crawl_js()"
+            )
+        result = executor.crawl_js(base_url)
+        return result["pages"], result["js_findings"], []
+
+    # "auto": prefer katana when the executor offers it at all, falling
+    # back to the native crawler on anything that means "katana isn't
+    # usable right now" rather than failing the whole job over a
+    # missing/misbehaving optional tool. An executor that doesn't offer
+    # crawl_js at all just quietly uses the native crawler — no note.
+    if not has_js_crawl:
+        return executor.crawl(base_url), [], []
+
+    try:
+        result = executor.crawl_js(base_url)
+        return result["pages"], result["js_findings"], []
+    except _KATANA_UNAVAILABLE_ERRORS as exc:
+        fallback_note = FindingOut(
+            finding_type="crawler_fallback",
+            description=(
+                "The JS-aware crawler (katana) wasn't usable for this run "
+                f"({type(exc).__name__}: {exc}) — fell back to the native "
+                "crawler. Endpoints/secrets that only exist inside JS "
+                "bundles may have been missed."
+            ),
+            host=_host(base_url),
+            service_port=_port(base_url),
+            evidence=Evidence(kind="tool_unavailable", summary=str(exc)),
+        )
+        return executor.crawl(base_url), [], [fallback_note]
 
 
 def _to_base_url(target: str) -> str:
@@ -297,12 +393,62 @@ def _check_missing_headers(base_url: str, response: dict) -> list[FindingOut]:
     ]
 
 
+def _check_js_finding(js_finding: dict, base_url: str) -> list[FindingOut]:
+    """Turns one katana -jsluice record (see core/parsers/katana.py) into
+    a FindingOut. Defensive against missing/malformed fields — a
+    half-populated record is skipped, not a crash."""
+    kind = js_finding.get("finding_kind")
+    source = js_finding.get("source") or base_url
+
+    if kind == "secret":
+        value = js_finding.get("value")
+        if not value:
+            return []
+        rule = js_finding.get("rule", "unknown")
+        return [
+            FindingOut(
+                finding_type="js_secret_found",
+                description=(
+                    f"Hardcoded secret ({rule}) found in client-side JS "
+                    f"served from {source}"
+                ),
+                host=_host(source),
+                service_port=_port(source),
+                evidence=Evidence(
+                    kind="jsluice_secret",
+                    summary=f"{rule}: {redact(value)}",
+                ),
+            )
+        ]
+
+    if kind == "endpoint":
+        endpoint = js_finding.get("endpoint")
+        if not endpoint:
+            return []
+        method = js_finding.get("method", "GET")
+        return [
+            FindingOut(
+                finding_type="js_endpoint_found",
+                description=(
+                    f"API endpoint {method} {endpoint} referenced only in "
+                    f"client-side JS from {source} — not reachable via a "
+                    f"server-rendered crawl"
+                ),
+                host=_host(source),
+                service_port=_port(source),
+                evidence=Evidence(
+                    kind="jsluice_endpoint",
+                    summary=f"{method} {endpoint} (source: {source})",
+                ),
+            )
+        ]
+
+    return []  # unrecognized finding_kind — defensive no-op, not a crash
+
+
 def _extract_binary_links(page: dict) -> list[str]:
-    body = page.get("body", "")
     links: list[str] = []
-    for href in HREF_RE.findall(body):
-        resolved = urljoin(page["url"], href)
-        path = urlparse(resolved).path.lower()
-        if path.endswith(BINARY_EXTENSIONS):
+    for resolved in extract_links(page.get("body", ""), page["url"]):
+        if urlparse(resolved).path.lower().endswith(BINARY_EXTENSIONS):
             links.append(resolved)
     return links
