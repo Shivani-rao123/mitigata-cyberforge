@@ -36,15 +36,68 @@ the target file. Two checks:
 
 from __future__ import annotations
 
+import hashlib
+import re
 import tempfile
+import threading
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
 from common.redact import redact
 from common.secret_patterns import SECRET_PATTERNS
 from core.scoped_executor import ScopedExecutor
 from core.tool_engine import ToolEngine, ToolNotConfigured, ToolNotInstalled
+
+# Binary-looking filename token found anywhere in a (decoded) URL — e.g.
+# the "agent.bin" in "index.php?file=agent.bin" — not just urlparse's own
+# path basename. Mirrors agents/web/agent.py's BINARY_EXTENSIONS list: a
+# file-manager-style download link routinely serves the real file
+# through a fixed script path (index.php, download.php, ...) while the
+# actual filename rides in a query-string value instead. See
+# _filename_from_url() below — this was a confirmed, real miss: such a
+# download was saved locally (and so reported) as "index.php", not the
+# binary it actually was.
+_BINARY_FILENAME_RE = re.compile(
+    r"([\w.\-]+\.(?:exe|dll|bin|so|apk|deb|rpm|msi|dmg|sh))(?:[/?&#]|$)",
+    re.IGNORECASE,
+)
+
+
+class SeenBinaryHashes:
+    """Thread-safe set of sha256 digests of binary content already
+    analyzed within one run. core/orchestrator.py creates exactly ONE
+    instance per run_target() call and shares it across every binary-
+    agent job dispatched in that run (including concurrent ones, hence
+    the lock) — letting run() below (see its `seen_hashes` kwarg) detect
+    when a job's content is byte-identical to one already analyzed
+    earlier in the SAME run, and skip re-emitting the same findings a
+    second/third time.
+
+    Confirmed, real-world trigger: the same binary fixture reachable via
+    three distinct download links produced the same hardcoded-secret and
+    unsafe-function findings three times over in one report — not three
+    different binaries, one binary counted three times.
+
+    Not persisted/shared across separate run_target() calls or
+    processes, by design — a genuinely identical binary legitimately
+    analyzed in two unrelated scans should still be reported both times;
+    this is purely a within-one-run, "don't re-walk the exact bytes you
+    already walked" optimization."""
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+        self._lock = threading.Lock()
+
+    def add_if_new(self, digest: str) -> bool:
+        """Returns True the first time `digest` is seen by this tracker,
+        False on every call after that (for the same digest)."""
+        with self._lock:
+            if digest in self._seen:
+                return False
+            self._seen.add(digest)
+            return True
+
 
 # function name -> why it's considered unsafe
 UNSAFE_FUNCTIONS: dict[str, str] = {
@@ -64,6 +117,7 @@ def run(
     job: Job,
     tool_engine: ToolEngine | None = None,
     executor: ScopedExecutor | None = None,
+    seen_hashes: SeenBinaryHashes | None = None,
 ) -> JobResult:
     """
     Execute a binary-analysis job. `job.target` is either a local file
@@ -71,6 +125,15 @@ def run(
     / ValueError for a bad local path, DownloadError for a failed/oversized
     download, and ValueError if a URL target is given without an
     `executor` — these are all setup problems, not "nothing found".
+
+    `seen_hashes`, when given (core/orchestrator.py passes one shared
+    instance per run_target() call), short-circuits analysis with a
+    single `duplicate_binary_skipped` finding when this job's content is
+    byte-identical to one already analyzed earlier in the same run — see
+    SeenBinaryHashes's own docstring for why this exists. None (the
+    default) disables the check entirely, matching every caller before
+    this parameter existed (main.py, run_pipeline.py's direct --agent
+    binary path, every existing test).
     """
     engine = tool_engine or ToolEngine()
 
@@ -84,6 +147,26 @@ def run(
     else:
         path = _validate_path(job.target)
 
+    if seen_hashes is not None:
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        if not seen_hashes.add_if_new(digest):
+            return JobResult(
+                job_id=job.job_id,
+                status="completed",
+                findings=[
+                    FindingOut(
+                        finding_type="duplicate_binary_skipped",
+                        description=(
+                            f"{Path(path).name} is byte-identical to a binary already analyzed "
+                            "earlier in this run (reached via a different link) — skipped to "
+                            "avoid reporting the same secrets/unsafe-function findings again"
+                        ),
+                        host=None,
+                        evidence=Evidence(kind="content_hash", summary=f"sha256:{digest}"),
+                    )
+                ],
+            )
+
     findings: list[FindingOut] = []
     findings.extend(_check_secrets(engine, path))
     findings.extend(_check_unsafe_functions(engine, path))
@@ -95,12 +178,26 @@ def _is_url(target: str) -> bool:
     return target.startswith("http://") or target.startswith("https://")
 
 
+def _filename_from_url(url: str) -> str:
+    """Prefers a binary-looking filename found anywhere in the decoded
+    URL (see _BINARY_FILENAME_RE's own comment) over the URL's path
+    basename, falling back to the path basename when no such token is
+    found, then a generic placeholder. The LAST match wins when more
+    than one is present — the closer-to-the-end token is the one an
+    actual "?...&file=name.ext"-style download convention means."""
+    decoded = unquote(url)
+    matches = _BINARY_FILENAME_RE.findall(decoded)
+    if matches:
+        return matches[-1]
+    return Path(urlparse(url).path).name or "downloaded_binary"
+
+
 def _download_to_temp_file(executor: ScopedExecutor, url: str) -> str:
     data = executor.download(url)
 
     # Keep the original filename where possible (shows up in finding
     # descriptions / evidence) instead of a random temp name.
-    basename = Path(urlparse(url).path).name or "downloaded_binary"
+    basename = _filename_from_url(url)
     tmp_dir = tempfile.mkdtemp(prefix="cart_binary_")
     dest = Path(tmp_dir) / basename
     dest.write_bytes(data)

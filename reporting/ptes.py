@@ -60,7 +60,7 @@ _PHASE_BY_FINDING_TYPE: dict[str, str] = {
 # split for the dashboard. Kept as a separate set here (not just "not in
 # _PHASE_BY_FINDING_TYPE") so a genuinely new/unmapped finding_type is
 # still visibly missing — see ptes_phase_for()'s fallback.
-_OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback"}
+_OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback", "duplicate_binary_skipped"}
 
 # Specific (finding_type, status) combinations that move to a LATER
 # phase once verification actually confirms them — the only one in this

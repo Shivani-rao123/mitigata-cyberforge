@@ -5,6 +5,9 @@ Unit tests for the web agent (FR-2). Uses MockScopedExecutor — no real
 network, no dependency on core being finished.
 """
 
+from html import escape as html_escape
+from urllib.parse import parse_qs, urlparse
+
 from agents.web.agent import run
 from common.contracts import Job
 from tests.mock_executor import MockScopedExecutor
@@ -147,8 +150,14 @@ def test_reflected_input_is_detected_on_get_forms():
     ]
 
     def http_get_fn(url):
-        if "q=" in url:
-            return {"status": 200, "headers": {}, "body": f"<p>results for {url}</p>"}
+        # Realistic vulnerable behavior: the app decodes the "q" query
+        # param and echoes it straight into the HTML, unescaped — this
+        # is what actually makes the probe marker's "<"/">" survive
+        # into the response raw (see REFLECTED_PROBE_MARKER's own
+        # comment on why the marker now contains them).
+        query = parse_qs(urlparse(url).query)
+        if "q" in query:
+            return {"status": 200, "headers": {}, "body": f"<p>results for {query['q'][0]}</p>"}
         return {"status": 200, "headers": ALL_HEADERS, "body": ""}
 
     executor = MockScopedExecutor(crawl_result=pages, http_get_fn=http_get_fn)
@@ -156,6 +165,36 @@ def test_reflected_input_is_detected_on_get_forms():
 
     reflected = [f for f in result.findings if f.finding_type == "reflected_input"]
     assert len(reflected) == 1
+
+
+def test_html_escaped_input_is_not_flagged_as_reflected():
+    # Direct regression test for a real false-positive: a page that
+    # correctly HTML-escapes the reflected value (so "<" becomes
+    # "&lt;" etc.) must NOT be flagged — the old all-alphanumeric probe
+    # marker could never tell this apart from a genuinely unescaped
+    # reflection, since the marker text itself showed up in the body
+    # either way.
+    pages = [
+        {
+            "url": "http://10.10.10.5:80/controls/escaped",
+            "status": 200,
+            "body": "",
+            "forms": [{"action": "/controls/escaped", "method": "get", "inputs": ["q"]}],
+        }
+    ]
+
+    def http_get_fn(url):
+        query = parse_qs(urlparse(url).query)
+        if "q" in query:
+            # Properly escaping app: html.escape() on the decoded value
+            # before rendering it back.
+            return {"status": 200, "headers": {}, "body": f"<p>{html_escape(query['q'][0])}</p>"}
+        return {"status": 200, "headers": ALL_HEADERS, "body": ""}
+
+    executor = MockScopedExecutor(crawl_result=pages, http_get_fn=http_get_fn)
+    result = run(_job(), executor)
+
+    assert not [f for f in result.findings if f.finding_type == "reflected_input"]
 
 
 def test_unreflected_input_is_not_flagged():

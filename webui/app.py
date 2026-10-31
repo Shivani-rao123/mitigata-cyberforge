@@ -56,6 +56,7 @@ FINDING_SEVERITY = {
     "js_endpoint_found": "low",  # attack-surface disclosure, not itself a proven weakness
     "open_port": "info",
     "crawler_fallback": "info",  # operational note (katana unavailable this run), not a finding
+    "duplicate_binary_skipped": "info",  # operational note — same binary already analyzed this run
 }
 
 
@@ -96,7 +97,7 @@ ENDPOINT_FINDING_TYPES = {"sensitive_endpoint_found", "js_endpoint_found", "dire
 # -style target can produce a dozen redirect_followed notes for every
 # one finding that actually matters; without this split, those notes
 # bury everything else.
-OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback"}
+OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback", "duplicate_binary_skipped"}
 
 
 def categorize_chain(chain) -> dict:

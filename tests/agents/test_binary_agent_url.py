@@ -6,9 +6,11 @@ Tests for the binary agent's URL-target path: when a discovered link
 the agent must download it through the scope-checked executor first.
 """
 
+import hashlib
+
 import pytest
 
-from agents.binary.agent import run
+from agents.binary.agent import SeenBinaryHashes, _filename_from_url, run
 from common.contracts import Job
 from core.scoped_executor import DownloadError, ScopeViolation
 from tests.mock_executor import MockScopedExecutor
@@ -67,3 +69,82 @@ def test_downloaded_filename_is_preserved_from_url_path():
     # no findings expected — this test only confirms it runs end-to-end
     # without crashing when the URL has a nested path
     assert result.status == "completed"
+
+
+# --- _filename_from_url (confirmed real-world miss: a file-manager-style
+# download link reported the wrong file, e.g. "index.php" instead of the
+# actual "agent.bin" it served) ---------------------------------------
+
+
+def test_filename_prefers_query_string_binary_name_over_path_basename():
+    url = "http://target.example/index.php?p=ops%2Fagent.bin&dl=1"
+    assert _filename_from_url(url) == "agent.bin"
+
+
+def test_filename_falls_back_to_path_basename_when_no_query_match():
+    url = "http://target.example/downloads/installer.exe"
+    assert _filename_from_url(url) == "installer.exe"
+
+
+def test_filename_falls_back_to_placeholder_when_nothing_matches():
+    url = "http://target.example/download?id=42"
+    assert _filename_from_url(url) == "download"
+
+
+# --- seen_hashes dedup (confirmed real-world miss: the same binary
+# served via 3 different links produced the same secret/unsafe-function
+# findings 3 times over in one report) ---------------------------------
+
+
+def test_duplicate_content_via_seen_hashes_is_skipped_with_one_note():
+    fake_bytes = b"\x7fELF fake binary content AKIAFAKEKEY1234567890"
+    tool_engine = MockToolEngine(strings_result=["AKIAFAKEKEY1234567890"])
+    tracker = SeenBinaryHashes()
+
+    first = run(
+        _job("http://target.example/link-one/agent.bin"),
+        tool_engine,
+        MockScopedExecutor(download_result=fake_bytes),
+        seen_hashes=tracker,
+    )
+    second = run(
+        _job("http://target.example/link-two/agent.bin"),
+        tool_engine,
+        MockScopedExecutor(download_result=fake_bytes),
+        seen_hashes=tracker,
+    )
+
+    assert [f.finding_type for f in first.findings] == ["hardcoded_secret"]
+    assert [f.finding_type for f in second.findings] == ["duplicate_binary_skipped"]
+    digest = hashlib.sha256(fake_bytes).hexdigest()
+    assert digest in second.findings[0].evidence.summary
+
+
+def test_without_seen_hashes_duplicate_content_is_analyzed_every_time():
+    # Default (None) behavior is unchanged from before this parameter
+    # existed — every existing caller (main.py, run_pipeline.py's direct
+    # --agent binary path, every other test in this file) still gets the
+    # old no-dedup behavior.
+    fake_bytes = b"\x7fELF fake binary content AKIAFAKEKEY1234567890"
+    tool_engine = MockToolEngine(strings_result=["AKIAFAKEKEY1234567890"])
+
+    first = run(
+        _job("http://target.example/link-one/agent.bin"),
+        tool_engine,
+        MockScopedExecutor(download_result=fake_bytes),
+    )
+    second = run(
+        _job("http://target.example/link-two/agent.bin"),
+        tool_engine,
+        MockScopedExecutor(download_result=fake_bytes),
+    )
+
+    assert [f.finding_type for f in first.findings] == ["hardcoded_secret"]
+    assert [f.finding_type for f in second.findings] == ["hardcoded_secret"]
+
+
+def test_seen_hashes_add_if_new_returns_true_once_then_false():
+    tracker = SeenBinaryHashes()
+    assert tracker.add_if_new("abc123") is True
+    assert tracker.add_if_new("abc123") is False
+    assert tracker.add_if_new("def456") is True

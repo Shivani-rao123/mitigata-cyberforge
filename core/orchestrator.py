@@ -42,6 +42,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from agents.binary.agent import SeenBinaryHashes
 from agents.binary.agent import run as run_binary_agent
 from agents.network.agent import run as run_network_agent
 from agents.web.agent import run as run_web_agent
@@ -98,7 +99,9 @@ class OrchestrationResult:
         return any(stage.error for stage in self.stages)
 
 
-def _run_one(job: Job, executor: ScopedExecutor) -> tuple[Job, StageResult]:
+def _run_one(
+    job: Job, executor: ScopedExecutor, seen_binary_hashes: SeenBinaryHashes | None = None
+) -> tuple[Job, StageResult]:
     """Runs a single job, catching any exception as a per-stage error —
     one broken job (nmap not installed, a dead target) must never take
     down the rest of a wave running alongside it in the same
@@ -117,8 +120,16 @@ def _run_one(job: Job, executor: ScopedExecutor) -> tuple[Job, StageResult]:
         elif job.agent == "binary":
             # The binary agent's run() takes tool_engine/executor as
             # separate optional kwargs rather than just `executor` —
-            # see agents/binary/agent.py's signature.
-            result = run_binary_agent(job, tool_engine=None, executor=executor)
+            # see agents/binary/agent.py's signature. `seen_binary_hashes`
+            # is shared across every binary job in THIS run_target() call
+            # (built once below, passed through unchanged) so a binary
+            # reached via several different links in the same run is
+            # only actually analyzed once — see SeenBinaryHashes's own
+            # docstring for the confirmed duplicate-findings bug this
+            # fixes.
+            result = run_binary_agent(
+                job, tool_engine=None, executor=executor, seen_hashes=seen_binary_hashes
+            )
         else:
             stage.error = f"no agent runner registered for agent {job.agent!r}"
             return job, stage
@@ -176,13 +187,19 @@ def run_target(
     )
 
     outcome = OrchestrationResult(target=target, scope=scope or [])
+    # One tracker per run_target() call, shared across every binary job
+    # THIS run dispatches (including concurrent ones within a wave) —
+    # not persisted beyond this call. See SeenBinaryHashes's docstring.
+    seen_binary_hashes = SeenBinaryHashes()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         wave_num = 0
         wave = queue.dequeue_all()
         while wave:
             wave_num += 1
-            for i, (job, stage) in enumerate(pool.map(lambda j: _run_one(j, executor), wave)):
+            for i, (job, stage) in enumerate(
+                pool.map(lambda j: _run_one(j, executor, seen_binary_hashes), wave)
+            ):
                 outcome.stages.append(stage)
                 if stage.result is None:
                     continue

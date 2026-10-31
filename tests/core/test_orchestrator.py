@@ -39,6 +39,36 @@ def _finding(finding_type="x"):
 @patch("core.orchestrator.run_binary_agent")
 @patch("core.orchestrator.run_web_agent")
 @patch("core.orchestrator.run_network_agent")
+def test_one_shared_seen_binary_hashes_tracker_is_passed_to_every_binary_job(
+    mock_network, mock_web, mock_binary
+):
+    # Regression guard for the real duplicate-findings bug the review
+    # flagged: the same binary reached via several links produced the
+    # same findings several times over. The fix (agents/binary/agent.py's
+    # SeenBinaryHashes) only works if ONE instance — not a fresh one per
+    # job — is shared across every binary job in a run; this proves
+    # run_target() actually wires it that way rather than just accepting
+    # the kwarg.
+    mock_network.return_value = _result(
+        follow_up_jobs=[
+            {"agent": "binary", "target": "http://x/a.bin", "context": {}},
+            {"agent": "binary", "target": "http://x/b.bin", "context": {}},
+        ]
+    )
+    mock_binary.return_value = _result()
+
+    orchestrator.run_target("1.2.3.4", executor=object())
+
+    assert mock_binary.call_count == 2
+    first_tracker = mock_binary.call_args_list[0].kwargs["seen_hashes"]
+    second_tracker = mock_binary.call_args_list[1].kwargs["seen_hashes"]
+    assert first_tracker is not None
+    assert first_tracker is second_tracker
+
+
+@patch("core.orchestrator.run_binary_agent")
+@patch("core.orchestrator.run_web_agent")
+@patch("core.orchestrator.run_network_agent")
 def test_network_follow_up_triggers_web_stage(mock_network, mock_web, mock_binary):
     mock_network.return_value = _result(
         follow_up_jobs=[{"agent": "web", "target": "1.2.3.4:80", "context": {}}]

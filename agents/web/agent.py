@@ -82,7 +82,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
 from common.flag_patterns import FLAG_PATTERNS
@@ -199,8 +199,18 @@ _SCANNABLE_FILE_EXT_RE = _extension_match_re(TEXT_SECRET_SCAN_EXTENSIONS)
 # — observed directly: only a path-based .exe link was ever picked up).
 _BINARY_EXT_RE = _extension_match_re(BINARY_EXTENSIONS)
 
-# Unique enough that it won't collide with real page content.
-REFLECTED_PROBE_MARKER = "CARTPROBE_6f1e9c"
+# Unique enough that it won't collide with real page content. Includes
+# an HTML-special character ("<...>") on purpose — a prior all-alphanumeric
+# marker ("CARTPROBE_6f1e9c") could never actually distinguish a page that
+# safely HTML-escapes reflected input (which would re-render it as
+# "&lt;CARTPROBE_6f1e9c&gt;") from one that doesn't: the marker text
+# itself showed up in the body either way, so every GET form with any
+# input at all was flagged, escaped or not — a confirmed false-positive
+# source (e.g. a "/controls/escaped"-style endpoint that correctly
+# escapes). Checking for this exact RAW form in the response (see
+# _check_reflected_input below) only matches when the `<`/`>` survived
+# un-escaped, which is the actual signal that matters here.
+REFLECTED_PROBE_MARKER = "<CARTPROBE_6f1e9c>"
 
 # Errors that mean "katana isn't usable right now" — in "auto" mode these
 # trigger a fallback to the native crawler instead of failing the job.
@@ -665,11 +675,21 @@ def _check_reflected_input(page: dict, executor: ScopedExecutor) -> list[Finding
             continue
 
         action_url = urljoin(page["url"], form.get("action") or page["url"])
-        query = "&".join(f"{name}={REFLECTED_PROBE_MARKER}" for name in inputs)
+        # The marker itself now contains "<"/">" (see REFLECTED_PROBE_MARKER's
+        # own comment) so it must be percent-encoded to go in a query
+        # string at all — the server then decides whether to re-render it
+        # raw (unsafe) or HTML-escaped (safe), which is exactly what this
+        # check needs to tell apart.
+        encoded_marker = quote(REFLECTED_PROBE_MARKER, safe="")
+        query = "&".join(f"{name}={encoded_marker}" for name in inputs)
         separator = "&" if "?" in action_url else "?"
         probe_url = f"{action_url}{separator}{query}"
 
         response = executor.http_get(probe_url)
+        # Only the RAW, unescaped marker counts as a real finding — a page
+        # that HTML-escapes the input re-renders "&lt;CARTPROBE_6f1e9c&gt;"
+        # instead, which does not contain this literal substring, so a
+        # properly-escaping endpoint correctly produces no finding here.
         if REFLECTED_PROBE_MARKER in response.get("body", ""):
             findings.append(
                 FindingOut(
