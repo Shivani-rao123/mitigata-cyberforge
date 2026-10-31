@@ -176,22 +176,38 @@ class RealScopedExecutor(ScopedExecutor):
     # ------------------------------------------------------------------
 
     def scan(self, target: str, allowed_ports: list[int] | None = None) -> dict:
-        ip = self._resolve_to_ip(target)
-        self._guard(ip)
-        raw_output = self._engine.run(self._network_tool, target=ip, ports=allowed_ports)
+        scan_target = self._resolve_scan_target(target)
+        self._guard(scan_target)
+        raw_output = self._engine.run(self._network_tool, target=scan_target, ports=allowed_ports)
         parsed = self._engine.parse(self._network_tool, raw_output)
         return self._revalidate_resolved_hosts(parsed)
 
-    def _resolve_to_ip(self, target: str) -> str:
+    def _resolve_scan_target(self, target: str) -> str:
         """
-        Accepts either an IP or a hostname. If it's already an IP, returns
-        it unchanged. If it's a hostname, resolves it to an IP BEFORE any
-        scope check happens — scope.yaml only ever understands IPs/CIDRs,
-        so we never check or scan a bare hostname string.
+        Accepts a single IP, a CIDR range (e.g. "192.168.1.0/24" — scan
+        every host on a subnet in one run, not just one address you
+        already know), or a hostname.
+
+        An IP or CIDR range is passed straight through unchanged — nmap
+        natively enumerates every host in a range itself, and
+        core/parsers/nmap.py already parses an XML capture with any
+        number of <host> elements into "hosts": [...], so a subnet scan
+        needs no special handling past this point. A bare "0.0.0.0" is
+        NOT a "scan my whole network" wildcard — it's a single address
+        (the IPv4 "unspecified" address), and most systems route it back
+        to localhost, which is why it only ever finds your own machine.
+        To scan everything on your LAN, pass that LAN's actual subnet
+        (check `ip addr` / `ifconfig` for your own address and mask,
+        e.g. 192.168.1.0/24), not 0.0.0.0 or 0.0.0.0/0 (the entire
+        public internet address space, and never in anyone's scope).
+
+        A hostname is resolved to a single IP BEFORE any scope check
+        happens — scope.yaml only ever understands IPs/CIDRs, so a bare
+        hostname string is never checked or scanned directly.
         """
         try:
-            ipaddress.ip_address(target)
-            return target  # already a valid IP
+            ipaddress.ip_network(target, strict=False)
+            return target  # already a valid IP or CIDR range
         except ValueError:
             pass
 
