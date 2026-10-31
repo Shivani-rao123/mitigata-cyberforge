@@ -71,6 +71,7 @@ def run_full_chain(
     target: str,
     scope_cidrs: list[str] | None = None,
     scope_file: str = "config/scope.yaml",
+    crawler: str = "auto",
 ) -> ChainResult:
     """
     Runs network agent against `target`, then the web agent against every
@@ -79,6 +80,13 @@ def run_full_chain(
     on that stage (error message) rather than raising — one broken stage
     (e.g. nmap not installed) shouldn't prevent showing the stages that
     did work.
+
+    `crawler` is passed straight through as the web job's
+    job.context["crawler"] (see agents/web/agent.py): "auto" (default)
+    prefers the katana-backed JS-aware crawl and falls back to the native
+    one with a visible crawler_fallback finding if katana isn't usable;
+    "requests" forces the native crawl; "katana" forces katana and lets
+    any failure surface as that stage's error instead of falling back.
     """
     if scope_cidrs:
         scope_manager = ScopeManager(cidrs=scope_cidrs)
@@ -110,7 +118,12 @@ def run_full_chain(
     web_results: list[JobResult] = []
 
     for i, fj in enumerate(web_follow_ups):
-        web_job = Job(job_id=f"ui-web-{i}", agent="web", target=fj["target"])
+        web_job = Job(
+            job_id=f"ui-web-{i}",
+            agent="web",
+            target=fj["target"],
+            context={"crawler": crawler},
+        )
         web_stage = StageResult(agent="web", target=fj["target"])
         chain.stages.append(web_stage)
         try:

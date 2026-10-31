@@ -197,7 +197,8 @@ form label::before {
   color: var(--accent-dim);
 }
 
-input[type="text"] {
+input[type="text"],
+select {
   width: 100%;
   background: #060a08;
   border: 1px solid var(--panel-border);
@@ -209,11 +210,28 @@ input[type="text"] {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--accent-dim) 50%),
+    linear-gradient(135deg, var(--accent-dim) 50%, transparent 50%);
+  background-position: calc(100% - 18px) center, calc(100% - 13px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+select option {
+  background: #060a08;
+  color: var(--accent);
+}
+
 input[type="text"]::placeholder {
   color: #2e4a3c;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-glow);

@@ -34,10 +34,13 @@ FINDING_SEVERITY = {
     "unsafe_function_call": "high",
     "default_creds_found": "high",
     "reflected_input": "high",
+    "js_secret_found": "high",  # a secret hardcoded in a JS bundle is just as real as one in a binary
     "sensitive_endpoint_found": "medium",
     "directory_listing_enabled": "medium",
     "missing_security_header": "low",
+    "js_endpoint_found": "low",  # attack-surface disclosure, not itself a proven weakness
     "open_port": "info",
+    "crawler_fallback": "info",  # operational note (katana unavailable this run), not a finding
 }
 
 
@@ -51,18 +54,25 @@ def index():
     return render_template("index.html")
 
 
+VALID_CRAWLER_MODES = ("auto", "requests", "katana")
+
+
 @app.route("/scan", methods=["POST"])
 def scan():
     target = request.form.get("target", "").strip()
     scope_raw = request.form.get("scope", "").strip()
+    crawler = request.form.get("crawler", "auto").strip() or "auto"
 
     if not target:
         return render_template("index.html", error="Target is required.")
 
+    if crawler not in VALID_CRAWLER_MODES:
+        return render_template("index.html", error=f"Unknown crawler mode: {crawler!r}")
+
     scope_cidrs = [c.strip() for c in scope_raw.split(",") if c.strip()] or None
 
     try:
-        chain = run_full_chain(target, scope_cidrs=scope_cidrs)
+        chain = run_full_chain(target, scope_cidrs=scope_cidrs, crawler=crawler)
     except Exception as exc:  # noqa: BLE001 — show it in the UI, not a stack trace
         return render_template("index.html", error=f"Could not start scan: {exc}")
 

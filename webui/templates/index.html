@@ -32,6 +32,18 @@
         <input type="text" id="scope" name="scope" placeholder="127.0.0.1/32, 10.10.10.0/24">
         <div class="hint">Comma-separated CIDR ranges for this run. Leave blank to fall back to config/scope.yaml.</div>
 
+        <label for="crawler">Web crawler</label>
+        <select id="crawler" name="crawler">
+          <option value="auto" selected>auto (katana if available, else native)</option>
+          <option value="requests">native only (requests + regex, no JS execution)</option>
+          <option value="katana">katana only (JS-aware, fails loudly if unavailable)</option>
+        </select>
+        <div class="hint">
+          "auto" tries katana (sees endpoints/secrets hidden inside JS/React bundles a plain crawl can't reach)
+          and falls back to the native crawler if katana isn't installed &mdash; you'll see a
+          <code>crawler_fallback</code> finding when that happens, so the degradation is never silent.
+        </div>
+
         <button type="submit">Run Full Scan</button>
       </form>
     </div>
