@@ -46,6 +46,10 @@ _PHASE_BY_FINDING_TYPE: dict[str, str] = {
     "unsafe_function_call": "Vulnerability Analysis",
     "reflected_input": "Vulnerability Analysis",
     "default_creds_found": "Vulnerability Analysis",  # see _STATUS_OVERRIDE below
+    # Exploitation — capturing a planted flag IS the proof of a
+    # successful compromise (same reason confirmed default_creds_found
+    # lands here), not merely evidence a weakness exists.
+    "ctf_flag_found": "Exploitation",
 }
 
 # finding_types that are purely operational commentary about how the

@@ -85,6 +85,7 @@ import subprocess
 from urllib.parse import unquote, urljoin, urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
+from common.flag_patterns import FLAG_PATTERNS
 from common.html_extract import extract_links, extract_script_srcs
 from common.js_extract import extract_js_endpoints
 from common.redact import redact
@@ -240,6 +241,7 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
         findings.extend(_check_directory_listing(page))
         findings.extend(_check_reflected_input(page, executor))
         findings.extend(_check_file_secrets(page))
+        findings.extend(_check_planted_flags(page))
 
         binary_links = _extract_binary_links(page)
         if page.get("looks_binary"):
@@ -532,6 +534,50 @@ def _check_file_secrets(page: dict) -> list[FindingOut]:
                 ),
             )
         )
+    return findings
+
+
+def _check_planted_flags(page: dict) -> list[FindingOut]:
+    """
+    Regex-scans a crawled plain-text/data file's body (same
+    TEXT_SECRET_SCAN_EXTENSIONS restriction _check_file_secrets uses,
+    for the same reason — see that function's docstring) for a
+    CTF/lab-style planted flag (common/flag_patterns.py's FLAG_PATTERNS).
+
+    Deliberately NOT merged into _check_file_secrets's loop even though
+    the scanning logic is nearly identical: a flag is a different KIND
+    of thing than a secret (it's the engagement's own success marker,
+    not a weakness), gets its own finding_type (ctf_flag_found) so a
+    report/dashboard can show it distinctly, and — unlike every other
+    finding in this project — its evidence shows the FULL captured
+    value, never redact()ed. redact() exists to keep a real credential
+    out of a report; a flag is the opposite: the thing you're trying to
+    prove you found.
+    """
+    if page.get("status", 0) != 200:
+        return []
+    if not _SCANNABLE_FILE_EXT_RE.search(unquote(page["url"])):
+        return []
+
+    body = page.get("body", "")
+    if not body:
+        return []
+
+    findings: list[FindingOut] = []
+    for flag_type, (pattern, description) in FLAG_PATTERNS.items():
+        for match in pattern.finditer(body):
+            findings.append(
+                FindingOut(
+                    finding_type="ctf_flag_found",
+                    description=f"{description} captured in a file served at {page['url']}",
+                    host=_host(page["url"]),
+                    service_port=_port(page["url"]),
+                    evidence=Evidence(
+                        kind="ctf_flag",
+                        summary=f"{description}: {match.group(0)}",
+                    ),
+                )
+            )
     return findings
 
 

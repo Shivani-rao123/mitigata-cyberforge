@@ -32,6 +32,12 @@ def test_false_positive_default_creds_found_has_no_phase():
     assert ptes_phase_for("default_creds_found", status="false_positive") is None
 
 
+def test_ctf_flag_found_is_exploitation():
+    # Capturing a planted flag IS the proof of compromise, same reasoning
+    # as confirmed default_creds_found landing in Exploitation.
+    assert ptes_phase_for("ctf_flag_found") == "Exploitation"
+
+
 def test_operational_notes_have_no_phase():
     assert ptes_phase_for("redirect_followed") is None
     assert ptes_phase_for("crawler_fallback") is None

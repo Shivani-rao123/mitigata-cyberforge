@@ -48,6 +48,7 @@ FINDING_SEVERITY = {
     "js_secret_found": "high",  # a secret hardcoded in a JS bundle is just as real as one in a binary
     "secret_in_file_found": "high",  # a secret in a crawled plain-text/config/log file (not JS) —
     # e.g. an exposed handover note, .env, or backup config found via a crawled link
+    "ctf_flag_found": "high",  # the engagement's own success marker — always worth top billing
     "sensitive_endpoint_found": "medium",
     "directory_listing_enabled": "medium",
     "redirect_followed": "info",  # operational note: the crawl followed a redirect to a new host/path
