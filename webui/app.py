@@ -64,6 +64,36 @@ def severity_filter(finding_type: str) -> str:
     return FINDING_SEVERITY.get(finding_type, "medium")
 
 
+# Display-only ordering — doesn't change what's found or how, just the
+# order a stage's findings render in: real weaknesses first, operational
+# notes ("redirect_followed", "crawler_fallback", "open_port" — things
+# that describe what the crawl/scan did rather than something wrong)
+# last, instead of interleaved with whatever order the agent happened
+# to produce them in. A real TinyFileManager-style target can produce a
+# dozen redirect_followed notes for every one finding that actually
+# matters; without this, those notes bury the real findings.
+_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2, "info": 3}
+
+# "info"-severity findings that are purely operational commentary, not a
+# weakness of any kind — collapsed into their own closed-by-default
+# section in results.html (sort_findings still needs this split, so it
+# lives here rather than duplicated in the template).
+OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback", "open_port"}
+
+
+@app.template_filter("sort_findings")
+def sort_findings_filter(findings):
+    """Findings for one stage, split into (notable, operational) —
+    `notable` sorted high->low->info by severity (stable: same-severity
+    findings keep their original relative order), `operational` left in
+    original order since there's no severity signal worth sorting by
+    within a pile of redirect_followed notes."""
+    notable = [f for f in findings if f.finding_type not in OPERATIONAL_NOTE_TYPES]
+    operational = [f for f in findings if f.finding_type in OPERATIONAL_NOTE_TYPES]
+    notable.sort(key=lambda f: _SEVERITY_RANK.get(FINDING_SEVERITY.get(f.finding_type, "medium"), 1))
+    return notable, operational
+
+
 @app.route("/", methods=["GET"])
 def index():
     # Whether katana is ACTUALLY installed on this machine right now —

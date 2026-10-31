@@ -322,6 +322,36 @@ button:hover { background: var(--accent-hover); }
   padding: 4px 0;
 }
 
+.operational-notes {
+  margin-top: 10px;
+}
+
+.operational-notes summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 8px 0;
+  list-style: none;
+  user-select: none;
+}
+
+.operational-notes summary::before {
+  content: "▸ ";
+  font-size: 10px;
+}
+
+.operational-notes[open] summary::before {
+  content: "▾ ";
+}
+
+.operational-notes summary:hover {
+  color: var(--text);
+}
+
+.operational-notes .finding {
+  margin-top: 8px;
+}
+
 .scope-info {
   font-size: 13px;
   color: var(--text-dim);

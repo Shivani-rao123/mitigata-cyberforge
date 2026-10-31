@@ -100,6 +100,50 @@ def test_scan_route_uses_the_fr4_concurrent_orchestrator_not_the_old_sequential_
     mock_binary.assert_not_called()
 
 
+def test_results_page_surfaces_real_findings_above_collapsed_operational_notes():
+    """UI-only regression: a real scan against a file-manager-style
+    target produces a dozen redirect_followed notes for every finding
+    that actually matters. sort_findings/results.html must put the
+    genuine finding (missing_security_header) before the collapsed
+    <details> block holding the operational noise (redirect_followed,
+    crawler_fallback, open_port), not interleave them in whatever order
+    the agent happened to produce them."""
+
+    def _finding(finding_type):
+        return FindingOut(
+            finding_type=finding_type, description=f"desc for {finding_type}", evidence=Evidence(kind="k", summary="s")
+        )
+
+    network_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[],
+        follow_up_jobs=[{"agent": "web", "target": "1.2.3.4:80", "context": {}}],
+    )
+    web_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[
+            _finding("crawler_fallback"),
+            _finding("missing_security_header"),
+            *[_finding("redirect_followed") for _ in range(11)],
+        ],
+    )
+
+    with (
+        patch("core.orchestrator.run_network_agent", return_value=network_result),
+        patch("core.orchestrator.run_web_agent", return_value=web_result),
+    ):
+        with app.test_client() as c:
+            resp = c.post("/scan", data={"target": "1.2.3.4", "scope": "1.2.3.4/32"})
+
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "<details" in html
+    assert "12 operational notes" in html  # crawler_fallback + 11 redirect_followed
+    assert html.index("missing_security_header") < html.index("<details")
+
+
 def test_webui_app_module_does_not_import_the_old_sequential_chain():
     """run_full_chain (webui/orchestrate.py) was the pre-FR-4 dashboard
     path. It must stay importable (its own tests still cover it) but

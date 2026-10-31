@@ -55,8 +55,9 @@
         {% if stage.error %}
           <div class="stage-error">{{ stage.error }}</div>
         {% elif stage.result %}
-          {% if stage.result.findings %}
-            {% for finding in stage.result.findings %}
+          {% set notable, operational = stage.result.findings | sort_findings %}
+          {% if notable %}
+            {% for finding in notable %}
               {% set sev = finding.finding_type | severity %}
               <div class="finding {{ sev }}">
                 <div class="finding-top">
@@ -67,8 +68,25 @@
                 <div class="finding-evidence">{{ finding.evidence.summary }}</div>
               </div>
             {% endfor %}
-          {% else %}
+          {% elif not operational %}
             <div class="no-findings">No findings at this stage.</div>
+          {% endif %}
+
+          {% if operational %}
+            <details class="operational-notes">
+              <summary>{{ operational | length }} operational note{{ 's' if operational | length != 1 else '' }} (redirects followed, ports seen, crawler fallbacks — not weaknesses)</summary>
+              {% for finding in operational %}
+                {% set sev = finding.finding_type | severity %}
+                <div class="finding {{ sev }}">
+                  <div class="finding-top">
+                    <span class="sev-tag {{ sev }}">{{ sev }}</span>
+                    <span class="finding-type">{{ finding.finding_type }}</span>
+                  </div>
+                  <div class="finding-desc">{{ finding.description }}</div>
+                  <div class="finding-evidence">{{ finding.evidence.summary }}</div>
+                </div>
+              {% endfor %}
+            </details>
           {% endif %}
 
           {% if stage.agent == 'network' and stage.result.hosts %}
