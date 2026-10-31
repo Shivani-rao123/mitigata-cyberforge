@@ -4,14 +4,25 @@ fixtures/file_manager_demo/app.py
 Mirrors the real-world scenario behind this fixture's test suite
 (tests/agents/test_web_agent_file_secrets.py): hitting the site's root
 302-redirects to a TinyFileManager-style dynamic directory listing, which
-links to a plain-text internal note containing a real secret — the kind
-of structure a bare-IP pentest target can actually have, and that a
-JS-only secret scan would completely miss (nothing here is JavaScript).
+links to a plain-text internal note containing a real secret, a
+third-party CDN script, and a binary download exposed only via a
+query-string-based "download" link — the kind of structure a bare-IP
+pentest target can actually have, and that each broke a different part
+of the web agent (now all fixed):
+  - a JS-only secret scan would completely miss the .txt note (nothing
+    here is JavaScript) -> native JS-bundle scan was extended to scan
+    plain-text files too (_check_file_secrets).
+  - the query-string download link (index.php?p=<file>&dl) has no
+    extension anywhere in its URL PATH -> both _check_file_secrets() and
+    _extract_binary_links() used to silently miss links shaped this way
+    (fixed: both now match against the full, decoded URL).
+  - the real, legitimate jQuery CDN script used to crash the entire web
+    stage with an unhandled ScopeViolation the moment it was fetched
+    (fixed: third-party scripts are now filtered out before fetching).
 
 Used to live-verify (not just unit-test) that RealScopedExecutor.crawl()
-follows the redirect and that agents/web/agent.py's
-_check_file_secrets()/_check_redirect_followed() fire on real HTTP
-responses, not just canned MockScopedExecutor fixtures.
+follows the redirect and that agents/web/agent.py's checks all fire on
+real HTTP responses, not just canned MockScopedExecutor fixtures.
 """
 
 from flask import Flask, redirect
@@ -36,9 +47,11 @@ def listing():
     return """
     <html><body>
       <h1>File Manager</h1>
+      <script src="https://code.jquery.com/jquery-3.6.1.min.js"></script>
       <table>
         <tr><td><a href="/filemanager/README.txt">README.txt</a></td></tr>
         <tr><td><a href="/filemanager/ops/netops-handover.txt">netops-handover.txt</a></td></tr>
+        <tr><td><a href="/index.php?p=tools%2Fagent.exe&dl">agent.exe (query-string link)</a></td></tr>
       </table>
     </body></html>
     """
@@ -85,6 +98,13 @@ def index_php():
 - internal AWS key for the backup bucket: {_FAKE_AWS_KEY}
 """
         return body, 200, {"Content-Type": "text/plain"}
+    if "agent.exe" in p:
+        # A query-string-only binary download link — same shape as the
+        # text-file one above, except this one has to make it all the
+        # way to a binary follow-up job (agents/web/agent.py's
+        # _extract_binary_links(), fixed alongside _check_file_secrets()
+        # since both had the exact same path-only-extension gap).
+        return b"MZ\x90\x00fake pe header", 200, {"Content-Type": "application/octet-stream"}
     return "not found", 404
 
 

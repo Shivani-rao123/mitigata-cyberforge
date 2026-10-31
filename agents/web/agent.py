@@ -165,19 +165,38 @@ TEXT_SECRET_SCAN_EXTENSIONS = (
     ".sql",
 )
 
-# A filename-with-extension check against urlparse(url).path alone (what
-# the first version of this check used) misses a VERY common file-manager
-# pattern: the filename passed entirely as a query-string VALUE, not in
-# the URL path at all — e.g. index.php?p=ops%2Fnetops-handover.txt&dl has
-# no extension anywhere in its path ("/index.php"), only inside the
-# (URL-encoded) query. Matched against the full url (decoded, path+query)
-# instead, bounded so ".txt" has to actually end a filename-looking token
-# (followed by '/', '?', '&', '#', or end-of-string) rather than matching
-# some unrelated substring like "textile" or "example.com/.xml-ish".
-_SCANNABLE_FILE_EXT_RE = re.compile(
-    r"\.(" + "|".join(ext.lstrip(".") for ext in TEXT_SECRET_SCAN_EXTENSIONS) + r")(?:[/?&#]|$)",
-    re.IGNORECASE,
-)
+def _extension_match_re(extensions: tuple[str, ...]) -> re.Pattern:
+    """
+    Builds a regex that matches any of `extensions` as a filename-ending
+    token ANYWHERE in a URL — not just urlparse(url).path, which a
+    file-manager-style app routinely bypasses by passing the filename as
+    a query-string VALUE instead of putting it in the path at all (e.g.
+    index.php?p=ops%2Fnetops-handover.txt&dl has no extension anywhere
+    in its path, "/index.php" — only inside the URL-encoded query).
+    Callers match this against the full, URL-decoded url (unquote(url)),
+    not just its path.
+
+    Bounded so e.g. ".txt" has to actually END a filename-looking token
+    (next char is '/', '?', '&', '#', or end-of-string) rather than
+    matching some unrelated substring like "textile", or a longer,
+    different extension like ".txtfile".
+    """
+    return re.compile(
+        r"\.(" + "|".join(ext.lstrip(".") for ext in extensions) + r")(?:[/?&#]|$)",
+        re.IGNORECASE,
+    )
+
+
+# See _check_file_secrets() below.
+_SCANNABLE_FILE_EXT_RE = _extension_match_re(TEXT_SECRET_SCAN_EXTENSIONS)
+
+# See _extract_binary_links() below — the exact same query-string-filename
+# gap applies to binary downloads (an .exe/.apk/... served via a
+# file-manager's "?p=...&dl"-style link) as it does to text-file secrets;
+# this was a real, live-confirmed miss (a query-string binary link
+# produced no binary follow-up job at all, so the binary agent never ran
+# — observed directly: only a path-based .exe link was ever picked up).
+_BINARY_EXT_RE = _extension_match_re(BINARY_EXTENSIONS)
 
 # Unique enough that it won't collide with real page content.
 REFLECTED_PROBE_MARKER = "CARTPROBE_6f1e9c"
@@ -694,8 +713,18 @@ def _check_js_finding(js_finding: dict, base_url: str) -> list[FindingOut]:
 
 
 def _extract_binary_links(page: dict) -> list[str]:
+    """
+    Links worth handing to the binary agent (FR-3) as a follow-up job.
+    Matched via _BINARY_EXT_RE against the full, decoded URL (path AND
+    query) — NOT just urlparse(url).path — since a file-manager-style
+    download link commonly passes the filename as a query-string value
+    (e.g. index.php?p=tools%2Fagent.exe&dl), which has no extension in
+    its path at all. A path-only check silently drops exactly this kind
+    of link; see _extension_match_re()'s docstring for the same gap
+    already fixed on the secret-file-scanning side.
+    """
     links: list[str] = []
     for resolved in extract_links(page.get("body", ""), page["url"]):
-        if urlparse(resolved).path.lower().endswith(BINARY_EXTENSIONS):
+        if _BINARY_EXT_RE.search(unquote(resolved)):
             links.append(resolved)
     return links

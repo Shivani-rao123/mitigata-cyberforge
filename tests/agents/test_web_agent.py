@@ -280,6 +280,32 @@ def test_duplicate_binary_links_across_pages_dedupe():
     assert len(binary_jobs) == 1
 
 
+def test_binary_link_passed_as_a_query_string_value_still_triggers_follow_up():
+    # Regression test: a file-manager-style download link
+    # (index.php?p=<urlencoded path>&dl) with NO extension anywhere in
+    # the URL path — only inside the query value — used to be silently
+    # dropped by _extract_binary_links()'s path-only extension check, so
+    # the binary agent never ran at all for exactly this (very common)
+    # link shape. Same root cause as the secret-in-file query-string
+    # fix, confirmed live against a real file-manager-style target.
+    pages = [
+        {
+            "url": "http://10.10.10.5:80/",
+            "status": 200,
+            "body": '<a href="/index.php?p=tools%2Fagent.exe&dl">Download agent</a>',
+            "forms": [],
+        }
+    ]
+    executor = MockScopedExecutor(
+        crawl_result=pages, http_result={"status": 200, "headers": ALL_HEADERS, "body": ""}
+    )
+    result = run(_job(), executor)
+
+    binary_jobs = [j for j in result.follow_up_jobs if j["agent"] == "binary"]
+    assert len(binary_jobs) == 1
+    assert binary_jobs[0]["target"] == "http://10.10.10.5:80/index.php?p=tools%2Fagent.exe&dl"
+
+
 def test_non_binary_links_do_not_trigger_follow_up_jobs():
     pages = [
         {
