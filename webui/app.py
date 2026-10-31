@@ -7,12 +7,21 @@ browser instead of three separate CLI commands.
 
 This is a convenience layer on top of what's already built (the same
 agents, the same ScopedExecutor, the same scope enforcement as main.py
-uses) — see webui/orchestrate.py for the actual chaining logic. It is
-NOT the real API (FR-7) or orchestrator (FR-4core/orchestrator.py,
-core/queue.py) — those are a persistent, DB-backed job queue your
-partner is building. Swap this dashboard to call that API once it
-exists; the templates don't need to change, only where the data comes
-from.
+uses). It now calls core/orchestrator.py's run_target() (FR-4) — the
+concurrent, agent-count-agnostic dispatcher — instead of
+webui/orchestrate.py's older synchronous run_full_chain(), which is the
+reason a scan used to take as long as every stage added up end to end.
+core/orchestrator.py's OrchestrationResult/StageResult were built to
+carry the exact same field names webui/orchestrate.py's ChainResult/
+StageResult did (scope, stages, total_findings, and per-stage agent/
+target/result/error), so results.html needed no changes at all.
+webui/orchestrate.py itself is left in place, untouched, with its own
+test suite still green — nothing else in the project still imports it.
+
+It is NOT the real API (FR-7) — that's a persistent, DB-backed job
+queue your partner is building on top of this. Swap this dashboard to
+call that API once it exists; the templates still won't need to
+change, only where the data comes from.
 
 Run:
     python3 webui/app.py
@@ -23,8 +32,10 @@ from __future__ import annotations
 
 from flask import Flask, render_template, request
 
+from core.orchestrator import run_target
+from core.scoped_executor import RealScopedExecutor
 from core.tool_engine import ToolEngine
-from webui.orchestrate import run_full_chain
+from scope.manager import ScopeManager
 
 app = Flask(__name__)
 
@@ -87,7 +98,26 @@ def scan():
     scope_cidrs = [c.strip() for c in scope_raw.split(",") if c.strip()] or None
 
     try:
-        chain = run_full_chain(target, scope_cidrs=scope_cidrs, crawler=crawler)
+        # Same scope-resolution webui/orchestrate.py's run_full_chain()
+        # used internally (explicit CIDRs from the form take priority,
+        # falling back to config/scope.yaml) — now built here since
+        # run_target() takes an already-built executor rather than
+        # constructing its own, so it isn't tied to one particular
+        # scope-loading convention.
+        if scope_cidrs:
+            scope_manager = ScopeManager(cidrs=scope_cidrs)
+        else:
+            scope_manager = ScopeManager("config/scope.yaml")
+        executor = RealScopedExecutor(
+            is_in_scope=scope_manager.is_in_scope,
+            log_scope_check=scope_manager.log_scope_check,
+        )
+        chain = run_target(
+            target,
+            executor=executor,
+            scope=scope_manager.authorized_networks,
+            crawler=crawler,
+        )
     except Exception as exc:  # noqa: BLE001 — show it in the UI, not a stack trace
         return render_template(
             "index.html", error=f"Could not start scan: {exc}", katana_installed=katana_installed
