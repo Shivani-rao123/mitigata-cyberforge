@@ -111,6 +111,20 @@ def test_stage_with_no_findings_persists_nothing_but_still_succeeds(mock_network
 
 
 @patch("core.orchestrator.run_network_agent")
+def test_allowed_ports_reaches_the_initial_network_job(mock_network):
+    mock_network.return_value = _result()
+    executor = MockScopedExecutor()
+
+    with Database(":memory:") as db:
+        run_and_persist(
+            target="10.10.10.0/24", executor=executor, db=db, allowed_ports=[22, 80, 443]
+        )
+
+    job_arg = mock_network.call_args[0][0]
+    assert job_arg.allowed_ports == [22, 80, 443]
+
+
+@patch("core.orchestrator.run_network_agent")
 def test_a_failed_stage_does_not_crash_persistence(mock_network):
     mock_network.side_effect = RuntimeError("nmap not installed")
     executor = MockScopedExecutor()

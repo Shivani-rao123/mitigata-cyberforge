@@ -82,6 +82,30 @@ def test_no_follow_up_jobs_means_only_network_stage_runs(mock_network):
 
 
 @patch("core.orchestrator.run_network_agent")
+def test_allowed_ports_is_passed_to_the_initial_network_job_only(mock_network):
+    """The main speed lever for a CIDR-range scan: restricting nmap's
+    own port set. Confirms run_target() actually plumbs allowed_ports
+    into the seed network Job (core/tool_engine.py turns this into
+    nmap's -p flag) rather than silently dropping it."""
+    mock_network.return_value = _result()
+
+    orchestrator.run_target("10.10.10.0/24", executor=object(), allowed_ports=[22, 80, 443])
+
+    job_arg = mock_network.call_args[0][0]
+    assert job_arg.allowed_ports == [22, 80, 443]
+
+
+@patch("core.orchestrator.run_network_agent")
+def test_allowed_ports_defaults_to_none_when_not_given(mock_network):
+    mock_network.return_value = _result()
+
+    orchestrator.run_target("10.10.10.0/24", executor=object())
+
+    job_arg = mock_network.call_args[0][0]
+    assert job_arg.allowed_ports is None
+
+
+@patch("core.orchestrator.run_network_agent")
 def test_network_stage_error_is_captured_not_raised(mock_network):
     mock_network.side_effect = RuntimeError("nmap not installed")
 

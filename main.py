@@ -63,6 +63,19 @@ def main() -> None:
         default="config/scope.yaml",
         help="Path to the fallback scope config, used when --scope isn't given.",
     )
+    parser.add_argument(
+        "--ports",
+        default=None,
+        help=(
+            "--agent network only: comma-separated TCP ports to restrict the scan to "
+            "(e.g. --ports 22,80,443,8080). Omit to let nmap use its own default port "
+            "set (~1000 ports) — which is what makes a CIDR-range scan (e.g. a /24) "
+            "slow: nmap -sV probes that many ports on every live host it finds. "
+            "Restricting to the handful of ports you actually care about is the "
+            "single biggest speed lever for a demo scan, by far more than any "
+            "parallelism change would buy."
+        ),
+    )
     args = parser.parse_args()
 
     if args.agent == "network":
@@ -91,12 +104,21 @@ def _build_scoped_executor(args: argparse.Namespace) -> RealScopedExecutor:
     )
 
 
+def _parse_ports(ports_arg: str | None) -> list[int] | None:
+    if not ports_arg:
+        return None
+    return [int(p.strip()) for p in ports_arg.split(",") if p.strip()]
+
+
 def _run_network(args: argparse.Namespace) -> None:
     executor = _build_scoped_executor(args)
 
-    job = Job(job_id="run-001", agent="network", target=args.target)
+    allowed_ports = _parse_ports(args.ports)
+    job = Job(job_id="run-001", agent="network", target=args.target, allowed_ports=allowed_ports)
 
     print(f"\n=== Running network discovery against {args.target} ===")
+    if allowed_ports:
+        print(f"(restricted to ports: {allowed_ports})")
     print(
         "(nmap's output is captured and only shown once the scan finishes — "
         "a real remote host can take 1-3+ minutes with no visible progress "

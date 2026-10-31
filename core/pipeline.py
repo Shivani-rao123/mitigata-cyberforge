@@ -48,6 +48,7 @@ def run_and_persist(
     db: Database,
     scope: list[str] | None = None,
     crawler: str = "auto",
+    allowed_ports: list[int] | None = None,
 ) -> dict:
     """
     Runs `target` through the full agent chain via core.orchestrator.
@@ -57,9 +58,15 @@ def run_and_persist(
     ran next, and returns:
 
         {"target_id": int, "outcome": OrchestrationResult, "attack_path": str}
+
+    `allowed_ports` is passed straight through to run_target()'s own
+    initial network job — see its docstring; it's the main lever for a
+    slow CIDR-range scan, not anything about how stages are dispatched.
     """
     target_id = db.insert_target(target)
-    outcome: OrchestrationResult = run_target(target, executor, scope=scope, crawler=crawler)
+    outcome: OrchestrationResult = run_target(
+        target, executor, scope=scope, crawler=crawler, allowed_ports=allowed_ports
+    )
 
     # Pass 1: persist every discovered host + its services (only the
     # network agent's stages populate JobResult.hosts; web/binary

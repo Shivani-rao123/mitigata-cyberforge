@@ -147,6 +147,7 @@ def run_target(
     scope: list[str] | None = None,
     crawler: str = "auto",
     max_workers: int = DEFAULT_MAX_WORKERS,
+    allowed_ports: list[int] | None = None,
 ) -> OrchestrationResult:
     """
     Runs `target` through the full agent chain, starting from one
@@ -160,9 +161,19 @@ def run_target(
     happened when `executor` was built — see core/scoped_executor.py) —
     carried through to OrchestrationResult so a caller can show it
     without having to track it separately.
+
+    `allowed_ports` restricts ONLY the initial network scan (nmap's own
+    "-p" flag, plumbed through core/tool_engine.py) — the single biggest
+    speed lever for a CIDR-range target: nmap's own default ~1000-port
+    set run with -sV against every live host in e.g. a /24 is what makes
+    a subnet scan slow, far more than anything about how this orchestrator
+    dispatches jobs. None (the default) leaves nmap's own default port
+    set in effect, same as before this parameter existed.
     """
     queue = JobQueue()
-    queue.enqueue(Job(job_id="orch-network-0", agent="network", target=target))
+    queue.enqueue(
+        Job(job_id="orch-network-0", agent="network", target=target, allowed_ports=allowed_ports)
+    )
 
     outcome = OrchestrationResult(target=target, scope=scope or [])
 

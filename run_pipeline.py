@@ -74,13 +74,25 @@ def main() -> None:
         default=None,
         help="SQLite file to persist into. Defaults to store/cart.db (core/db.py's own default).",
     )
+    parser.add_argument(
+        "--ports",
+        default=None,
+        help=(
+            "Comma-separated TCP ports to restrict the initial network scan to "
+            "(e.g. --ports 22,80,443,8080). Omit to use nmap's own default port set. "
+            "Restricting this is the main lever for a slow CIDR-range (e.g. /24) scan."
+        ),
+    )
     args = parser.parse_args()
 
     executor = _build_scoped_executor(args)
     db = Database(args.db_path) if args.db_path else Database()
+    allowed_ports = [int(p.strip()) for p in args.ports.split(",") if p.strip()] if args.ports else None
 
     try:
         print(f"\n=== Running full pipeline against {args.target} ===")
+        if allowed_ports:
+            print(f"(network scan restricted to ports: {allowed_ports})")
         print(
             "(this runs every stage the target's own discoveries call for — "
             "network scan, then whatever web/binary follow-ups it produces — "
@@ -93,6 +105,7 @@ def main() -> None:
             db=db,
             scope=[args.scope] if args.scope else None,
             crawler=args.crawler,
+            allowed_ports=allowed_ports,
         )
 
         outcome = outcome_data["outcome"]
