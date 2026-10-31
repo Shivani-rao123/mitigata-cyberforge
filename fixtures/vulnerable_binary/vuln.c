@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 
-char *API_KEY = "AKIAFAKEKEY1234567890";
+char *API_KEY = "AKIAFAKEEXAMPLE12345";
 
 void copy_input(char *input) {
     char buf[16];

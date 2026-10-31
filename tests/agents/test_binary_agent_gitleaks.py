@@ -10,6 +10,7 @@ piece works in isolation.
 
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -53,15 +54,29 @@ def test_gitleaks_result_produces_hardcoded_secret_finding(temp_file):
     assert "AKIAABCDEFGHIJKLMNOP" not in secrets[0].evidence.summary
 
 
-def test_gitleaks_finding_includes_file_and_line_when_present(temp_file):
+def test_gitleaks_finding_references_the_original_binary_not_the_strings_extraction(temp_file):
+    # gitleaks is run against a `strings` extraction of the binary, not
+    # the raw file (see agents/binary/agent.py's _check_secrets_gitleaks
+    # docstring — gitleaks silently skips non-UTF8 binary content
+    # otherwise). leak['file']/['line'] therefore point at a temp
+    # extraction file the user never sees, so the finding deliberately
+    # references the real binary's name instead, with no line number.
     engine = MockToolEngine(
         gitleaks_result=[
-            {"rule": "slack-token", "description": "Slack token", "secret": "xoxb-fake", "file": "app.py", "line": 42}
+            {
+                "rule": "slack-token",
+                "description": "Slack token",
+                "secret": "xoxb-fake",
+                "file": "/tmp/cart_gitleaks_xyz/binary.strings.txt",
+                "line": 42,
+            }
         ],
     )
     result = run(_job(temp_file), engine)
     secrets = [f for f in result.findings if f.finding_type == "hardcoded_secret"]
-    assert "app.py:42" in secrets[0].description
+    assert "Slack token found in" in secrets[0].description
+    assert Path(temp_file).name in secrets[0].description
+    assert "cart_gitleaks" not in secrets[0].description
 
 
 def test_gitleaks_not_installed_falls_back_to_regex_check(temp_file):

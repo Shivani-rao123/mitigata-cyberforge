@@ -36,37 +36,15 @@ the target file. Two checks:
 
 from __future__ import annotations
 
-import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
 from common.redact import redact
+from common.secret_patterns import SECRET_PATTERNS
 from core.scoped_executor import ScopedExecutor
 from core.tool_engine import ToolEngine, ToolNotConfigured, ToolNotInstalled
-
-# name -> (compiled regex, human-readable description)
-SECRET_PATTERNS: dict[str, tuple[re.Pattern, str]] = {
-    "aws_access_key_id": (
-        re.compile(r"AKIA[0-9A-Z]{16}"),
-        "AWS Access Key ID",
-    ),
-    "private_key_header": (
-        re.compile(r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"),
-        "Private key material",
-    ),
-    "slack_token": (
-        re.compile(r"xox[baprs]-[0-9a-zA-Z-]{10,48}"),
-        "Slack token",
-    ),
-    "generic_secret_assignment": (
-        re.compile(
-            r"(?i)(api[_-]?key|secret|token|password)['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-/+]{8,}['\"]"
-        ),
-        "Hardcoded secret-like assignment",
-    ),
-}
 
 # function name -> why it's considered unsafe
 UNSAFE_FUNCTIONS: dict[str, str] = {
@@ -156,7 +134,28 @@ def _check_secrets(engine: ToolEngine, path: str) -> list[FindingOut]:
 
 
 def _check_secrets_gitleaks(engine: ToolEngine, path: str) -> list[FindingOut]:
-    raw = engine.run("gitleaks", target=path)
+    """Runs gitleaks against a `strings` extraction of `path`, not the raw
+    file itself.
+
+    Confirmed against a live gitleaks install: pointing `gitleaks detect
+    --source` directly at a compiled binary finds NOTHING even when a
+    secret is sitting right there as a plain ASCII string inside it —
+    gitleaks checks that a file's content is valid UTF-8 text before
+    scanning it at all, and a binary's raw bytes almost never pass that
+    check, so the whole file is silently skipped. The regex fallback
+    below already runs `strings` first for exactly this reason; gitleaks
+    needs the same treatment. Scanning real source/text files through
+    `strings` first is harmless — printable text passes through
+    unchanged — so this is always safe, not just a binary-only path.
+    """
+    raw_strings = engine.run("strings", target=path)
+    strings_text = "\n".join(engine.parse("strings", raw_strings).get("strings", []))
+
+    tmp_dir = tempfile.mkdtemp(prefix="cart_gitleaks_")
+    strings_path = Path(tmp_dir) / (Path(path).name + ".strings.txt")
+    strings_path.write_text(strings_text)
+
+    raw = engine.run("gitleaks", target=str(strings_path))
     leaks = engine.parse("gitleaks", raw)
 
     findings: list[FindingOut] = []
@@ -168,11 +167,14 @@ def _check_secrets_gitleaks(engine: ToolEngine, path: str) -> list[FindingOut]:
             continue
         seen.add(dedup_key)
 
-        location = f" ({leak['file']}:{leak['line']})" if leak.get("file") else ""
+        # leak['file']/['line'] point at the temp strings extraction, not
+        # anything the user recognizes — reference the real binary name
+        # instead and drop the line number (meaningless outside that
+        # extraction).
         findings.append(
             FindingOut(
                 finding_type="hardcoded_secret",
-                description=f"{leak['description']} found in {Path(path).name}{location}",
+                description=f"{leak['description']} found in {Path(path).name}",
                 host=None,
                 evidence=Evidence(
                     kind="gitleaks_match",

@@ -1,12 +1,17 @@
 """
 tests/core/test_katana_parser.py
 
-Unit tests for core/parsers/katana.py. See that module's docstring for
-the schema caveat: these fixtures encode the documented/expected katana
-JSONL shape as best understood without a live binary to verify against
-in the build environment — if a real katana's field names differ,
-adjust both the parser's _FIELD_CANDIDATES-style lookups and these
-fixtures together.
+Unit tests for core/parsers/katana.py.
+
+The "type": "secret"/"type": "endpoint" fixtures below (_secret_line,
+_endpoint_line and everything built on them) encode a schema that was
+never actually observed from a real katana binary — see the module
+docstring for what katana v1.1.2 actually emits, confirmed against a
+live install. They're kept as tests of a tolerated *alternate* input
+shape, not the primary path. The tests in the "real katana shape"
+section below use fixtures captured from an actual
+`katana -jsonl -silent -d 2 -jsluice -timeout 10` run and are what
+actually matters for js_endpoint_found / js_secret_found in practice.
 """
 
 import json
@@ -206,6 +211,161 @@ def test_unrecognized_type_field_is_treated_as_a_normal_page_attempt():
     assert result["pages"] == []
     assert result["js_findings"] == []
     assert result["skipped_lines"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Real katana shape — captured from a live `katana -jsonl -silent -d 2
+# -jsluice -timeout 10` run against a Flask fixture serving a page that
+# loads a JS bundle containing a fetch() call and a hardcoded secret.
+# This is what actually drives js_endpoint_found / js_secret_found.
+# ---------------------------------------------------------------------------
+
+
+def _real_page_record(url, status=200, body="", content_type="text/html", tag=None, source=None):
+    request = {"method": "GET", "endpoint": url}
+    if tag is not None:
+        request["tag"] = tag
+    if source is not None:
+        request["source"] = source
+    return json.dumps(
+        {
+            "request": request,
+            "response": {
+                "status_code": status,
+                "headers": {"content-type": content_type},
+                "body": body,
+            },
+        }
+    )
+
+
+def test_plain_page_request_has_no_tag_and_derives_no_js_findings():
+    raw = _real_page_record("http://x/", body="<h1>hi</h1>")
+    result = parse(raw)
+    assert len(result["pages"]) == 1
+    assert result["pages"][0]["request_tag"] is None
+    assert result["js_findings"] == []
+
+
+def test_script_src_reference_is_not_treated_as_a_js_discovered_endpoint():
+    # <script src="/static/app.js"> — katana tags this "script", not
+    # "js"/"xhr". Loading the script itself isn't "an endpoint only
+    # reachable via JS" — it's a normal, visible reference in the HTML.
+    raw = _real_page_record(
+        "http://x/static/app.js",
+        content_type="application/javascript",
+        tag="script",
+        source="http://x/",
+    )
+    result = parse(raw)
+    endpoint_findings = [f for f in result["js_findings"] if f["finding_kind"] == "endpoint"]
+    assert endpoint_findings == []
+
+
+def test_jsluice_fetch_tag_produces_a_js_endpoint_finding():
+    # This is what katana actually emits when -jsluice follows a fetch()
+    # call it found inside JS source: a normal page record for the
+    # discovered endpoint, tagged "js", with "source" pointing at the JS
+    # file it was extracted from.
+    raw = _real_page_record(
+        "http://x/api/internal/users/export",
+        status=404,
+        tag="js",
+        source="http://x/static/app.js",
+    )
+    result = parse(raw)
+    endpoint_findings = [f for f in result["js_findings"] if f["finding_kind"] == "endpoint"]
+    assert len(endpoint_findings) == 1
+    finding = endpoint_findings[0]
+    assert finding["endpoint"] == "http://x/api/internal/users/export"
+    assert finding["source"] == "http://x/static/app.js"
+    assert finding["method"] == "GET"
+
+
+def test_js_tagged_record_without_a_source_is_not_turned_into_a_finding():
+    raw = _real_page_record("http://x/api/thing", tag="js")  # no "source" field
+    result = parse(raw)
+    assert result["js_findings"] == []
+
+
+def test_secret_embedded_in_a_js_response_body_is_found_by_regex():
+    # katana itself has no secret-extraction step (see module docstring)
+    # — this is the parser regex-scanning the JS body it already has.
+    body = 'const KEY = "AKIAFAKEEXAMPLE12345"; fetch("/api/x");'
+    raw = _real_page_record(
+        "http://x/static/app.js", body=body, content_type="application/javascript"
+    )
+    result = parse(raw)
+    secret_findings = [f for f in result["js_findings"] if f["finding_kind"] == "secret"]
+    assert len(secret_findings) == 1
+    finding = secret_findings[0]
+    assert finding["source"] == "http://x/static/app.js"
+    assert finding["value"] == "AKIAFAKEEXAMPLE12345"
+
+
+def test_js_file_recognized_by_url_extension_even_without_content_type():
+    body = 'const KEY = "AKIAFAKEEXAMPLE12345";'
+    raw = _real_page_record("http://x/static/app.js", body=body, content_type="")
+    result = parse(raw)
+    secret_findings = [f for f in result["js_findings"] if f["finding_kind"] == "secret"]
+    assert len(secret_findings) == 1
+
+
+def test_html_page_body_is_not_scanned_for_secrets_even_if_it_contains_one():
+    # Only JS responses are scanned — an HTML page isn't, even if an
+    # AWS-shaped string happens to appear in it (keeps this check
+    # specific to "found in client-side JS", not a generic body grep).
+    body = '<p>AKIAFAKEEXAMPLE12345</p>'
+    raw = _real_page_record("http://x/about", body=body, content_type="text/html")
+    result = parse(raw)
+    assert result["js_findings"] == []
+
+
+def test_no_duplicate_secret_finding_for_the_same_pattern_in_one_js_file():
+    body = 'const A = "AKIAFAKEEXAMPLE12345"; const B = "AKIAFAKEEXAMPLE99999";'
+    raw = _real_page_record("http://x/static/app.js", body=body, content_type="application/javascript")
+    result = parse(raw)
+    secret_findings = [f for f in result["js_findings"] if f["finding_kind"] == "secret"]
+    # Same secret_type (aws_access_key_id) matches twice in one body —
+    # only the first match is reported per (page, pattern) pair, same
+    # dedup granularity as the binary agent's regex fallback.
+    assert len(secret_findings) == 1
+
+
+def test_real_capture_with_page_js_reference_and_discovered_endpoint():
+    # The exact shape of a live 3-line katana capture: homepage ->
+    # script tag referencing app.js -> jsluice following the fetch()
+    # call it found inside app.js.
+    raw = "\n".join(
+        [
+            _real_page_record(
+                "http://x/",
+                body='<script src="/static/app.js"></script>',
+            ),
+            _real_page_record(
+                "http://x/static/app.js",
+                content_type="application/javascript",
+                tag="script",
+                source="http://x/",
+                body='const KEY="AKIAFAKEEXAMPLE12345"; fetch("/api/internal/users/export");',
+            ),
+            _real_page_record(
+                "http://x/api/internal/users/export",
+                status=404,
+                tag="js",
+                source="http://x/static/app.js",
+            ),
+        ]
+    )
+    result = parse(raw)
+    assert len(result["pages"]) == 3
+
+    endpoint_findings = [f for f in result["js_findings"] if f["finding_kind"] == "endpoint"]
+    secret_findings = [f for f in result["js_findings"] if f["finding_kind"] == "secret"]
+    assert len(endpoint_findings) == 1
+    assert endpoint_findings[0]["endpoint"] == "http://x/api/internal/users/export"
+    assert len(secret_findings) == 1
+    assert secret_findings[0]["source"] == "http://x/static/app.js"
 
 
 # ---------------------------------------------------------------------------
