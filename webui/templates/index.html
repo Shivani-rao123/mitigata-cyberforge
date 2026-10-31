@@ -9,11 +9,11 @@
   <header>
     <div class="brand">
       <div>
-        <h1><span class="prompt">$</span> CART<span class="hl">_</span>engine</h1>
+        <h1>CART <span>Engine</span></h1>
         <p>Autonomous Multi-Agent Penetration Testing — network &rarr; web &rarr; binary, chained automatically.</p>
       </div>
     </div>
-    <div class="status-pill"><span class="dot"></span> system ready</div>
+    <div class="status-pill"><span class="dot"></span> System ready</div>
   </header>
 
   <main>
@@ -22,7 +22,7 @@
     {% endif %}
 
     <div class="panel">
-      <p class="panel-title">target acquisition</p>
+      <p class="panel-title">Target</p>
       <form method="post" action="{{ url_for('scan') }}">
         <label for="target">Target</label>
         <input type="text" id="target" name="target" placeholder="127.0.0.1  or  krcbc.in  or  10.10.10.5" required>
@@ -49,16 +49,16 @@
     </div>
 
     <div class="panel">
-      <p class="panel-title">pipeline</p>
+      <p class="panel-title">Pipeline</p>
       <p class="hint" style="line-height:1.8; font-size:12px;">
-        <strong style="color:var(--accent)">01</strong> &nbsp;network agent &mdash; nmap-based host/port/service discovery<br>
-        <strong style="color:var(--low)">02</strong> &nbsp;web agent &mdash; auto-triggered per web service found: crawl, admin/login detection, reflected-input testing<br>
-        <strong style="color:var(--medium)">03</strong> &nbsp;binary agent &mdash; auto-triggered per downloadable binary found: hardcoded secrets, unsafe functions<br><br>
-        every step is scope-checked before it touches the network &mdash; a target outside your authorized scope is blocked, not scanned.
+        <strong style="color:var(--accent)">1</strong> &nbsp;Network agent &mdash; nmap-based host/port/service discovery<br>
+        <strong style="color:var(--low)">2</strong> &nbsp;Web agent &mdash; auto-triggered per web service found: crawl, admin/login detection, reflected-input testing<br>
+        <strong style="color:var(--medium)">3</strong> &nbsp;Binary agent &mdash; auto-triggered per downloadable binary found: hardcoded secrets, unsafe functions<br><br>
+        Every step is scope-checked before it touches the network — a target outside your authorized scope is blocked, not scanned.
       </p>
     </div>
   </main>
 
-  <footer>CART // PTES-aligned // scope-enforced // built for Mitigata hackathon</footer>
+  <footer>CART &middot; PTES-aligned &middot; scope-enforced &middot; built for Mitigata hackathon</footer>
 </body>
 </html>
