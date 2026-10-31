@@ -80,8 +80,9 @@ used —
 
 from __future__ import annotations
 
+import re
 import subprocess
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from common.contracts import Evidence, FindingOut, Job, JobResult
 from common.html_extract import extract_links, extract_script_srcs
@@ -162,6 +163,20 @@ TEXT_SECRET_SCAN_EXTENSIONS = (
     ".properties",
     ".bak",
     ".sql",
+)
+
+# A filename-with-extension check against urlparse(url).path alone (what
+# the first version of this check used) misses a VERY common file-manager
+# pattern: the filename passed entirely as a query-string VALUE, not in
+# the URL path at all — e.g. index.php?p=ops%2Fnetops-handover.txt&dl has
+# no extension anywhere in its path ("/index.php"), only inside the
+# (URL-encoded) query. Matched against the full url (decoded, path+query)
+# instead, bounded so ".txt" has to actually end a filename-looking token
+# (followed by '/', '?', '&', '#', or end-of-string) rather than matching
+# some unrelated substring like "textile" or "example.com/.xml-ish".
+_SCANNABLE_FILE_EXT_RE = re.compile(
+    r"\.(" + "|".join(ext.lstrip(".") for ext in TEXT_SECRET_SCAN_EXTENSIONS) + r")(?:[/?&#]|$)",
+    re.IGNORECASE,
 )
 
 # Unique enough that it won't collide with real page content.
@@ -433,11 +448,16 @@ def _check_file_secrets(page: dict) -> list[FindingOut]:
 
     Deliberately restricted to TEXT_SECRET_SCAN_EXTENSIONS — an ordinary
     crawled HTML page's body is NOT scanned here (see that constant's
-    comment for why).
+    comment for why). Matched against the full URL (path AND query,
+    decoded) via _SCANNABLE_FILE_EXT_RE, not just the path — a file
+    manager that passes the filename as a query value (e.g.
+    index.php?p=ops%2Fnetops-handover.txt) has no extension in its path
+    at all, and a path-only check misses it entirely even though the
+    actual served content is exactly a plain-text file.
     """
     if page.get("status", 0) != 200:
         return []  # nothing was actually served (404/403/etc) — no body worth scanning
-    if not urlparse(page["url"]).path.lower().endswith(TEXT_SECRET_SCAN_EXTENSIONS):
+    if not _SCANNABLE_FILE_EXT_RE.search(unquote(page["url"])):
         return []
 
     body = page.get("body", "")

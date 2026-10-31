@@ -160,6 +160,85 @@ def test_each_supported_text_extension_is_scanned():
         assert len(found) == 1, f"expected a finding for {ext}, got {found}"
 
 
+def test_filename_passed_entirely_as_a_query_value_is_still_scanned():
+    # The real gap this test guards: a file-manager app (TinyFileManager
+    # and friends) commonly serves a download/preview via
+    # index.php?p=<urlencoded path>&dl, with NO extension anywhere in the
+    # URL's path component ("/index.php") — only inside the query value.
+    # A path-only extension check misses this entirely even though the
+    # served content is exactly a plain-text file with a real secret in
+    # it (reported by a live user run against a real TinyFileManager-
+    # style target).
+    page = {
+        "url": "http://10.10.10.5:80/index.php?p=ops%2Fnetops-handover.txt&dl",
+        "status": 200,
+        "body": f"internal key: {_FAKE_AWS_KEY}",
+        "forms": [],
+    }
+    executor = MockScopedExecutor(
+        crawl_result=[page],
+        http_result={"status": 200, "headers": ALL_HEADERS, "body": ""},
+    )
+    result = run(_job(), executor)
+    secrets = [f for f in result.findings if f.finding_type == "secret_in_file_found"]
+    assert len(secrets) == 1
+    assert "index.php" in secrets[0].description
+
+
+def test_path_info_style_filename_with_trailing_query_is_scanned():
+    # index.php/ops/netops-handover.txt?p= — extension IS in the path
+    # here (just a different file-manager URL style), should already
+    # work, but kept alongside the query-only case above to pin both
+    # shapes at once.
+    page = {
+        "url": "http://10.10.10.5:80/index.php/ops/netops-handover.txt?p=",
+        "status": 200,
+        "body": f"internal key: {_FAKE_AWS_KEY}",
+        "forms": [],
+    }
+    executor = MockScopedExecutor(
+        crawl_result=[page],
+        http_result={"status": 200, "headers": ALL_HEADERS, "body": ""},
+    )
+    result = run(_job(), executor)
+    assert [f for f in result.findings if f.finding_type == "secret_in_file_found"]
+
+
+def test_extension_lookalike_substring_in_query_does_not_false_positive():
+    # "textile-example" contains "text" but not a real ".txt" extension
+    # token — must not be treated as scannable.
+    page = {
+        "url": "http://10.10.10.5:80/page?ref=textile-example",
+        "status": 200,
+        "body": f"internal key: {_FAKE_AWS_KEY}",
+        "forms": [],
+    }
+    executor = MockScopedExecutor(
+        crawl_result=[page],
+        http_result={"status": 200, "headers": ALL_HEADERS, "body": ""},
+    )
+    result = run(_job(), executor)
+    assert not [f for f in result.findings if f.finding_type == "secret_in_file_found"]
+
+
+def test_longer_unrelated_extension_does_not_match_a_shorter_one():
+    # data.jsonp must not be treated as scannable just because it starts
+    # with ".json" — the boundary check (next char must be /?&# or end)
+    # has to actually hold.
+    page = {
+        "url": "http://10.10.10.5:80/data.jsonp",
+        "status": 200,
+        "body": f"internal key: {_FAKE_AWS_KEY}",
+        "forms": [],
+    }
+    executor = MockScopedExecutor(
+        crawl_result=[page],
+        http_result={"status": 200, "headers": ALL_HEADERS, "body": ""},
+    )
+    result = run(_job(), executor)
+    assert not [f for f in result.findings if f.finding_type == "secret_in_file_found"]
+
+
 def test_page_with_no_redirect_chain_produces_no_redirect_finding():
     page = {
         "url": "http://10.10.10.5:80/",

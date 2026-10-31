@@ -59,5 +59,34 @@ def handover():
     return body, 200, {"Content-Type": "text/plain"}
 
 
+# --- A second, even more common real-world shape: a TinyFileManager-style
+# "download" link that passes the filename entirely as a query-string
+# VALUE (index.php?p=<urlencoded path>&dl), with no file extension
+# anywhere in the URL's path component at all. A path-only extension
+# check misses this completely — this fixture is what surfaced that gap
+# in agents/web/agent.py's _check_file_secrets() (fixed by matching
+# against the full, decoded URL via _SCANNABLE_FILE_EXT_RE instead of
+# just urlparse(url).path). -------------------------------------------
+
+
+@app.route("/share-link")
+def share_link():
+    return redirect("/index.php?p=ops%2Fnetops-handover.txt&dl")
+
+
+@app.route("/index.php")
+def index_php():
+    from flask import request
+
+    p = request.args.get("p", "")
+    if "netops-handover" in p:
+        body = f"""NetOps handover notes
+----------------------
+- internal AWS key for the backup bucket: {_FAKE_AWS_KEY}
+"""
+        return body, 200, {"Content-Type": "text/plain"}
+    return "not found", 404
+
+
 if __name__ == "__main__":
     app.run(port=5099)
