@@ -119,30 +119,60 @@ def _run_network(args: argparse.Namespace) -> None:
 
 def _run_binary(args: argparse.Namespace) -> None:
     from agents.binary.agent import run as run_binary_agent
+    from agents.binary.discovery import find_binary_links, looks_like_binary_url
 
-    job = Job(job_id="run-001", agent="binary", target=args.target)
+    is_url = args.target.startswith("http://") or args.target.startswith("https://")
 
     executor = None
-    if args.target.startswith("http://") or args.target.startswith("https://"):
-        # A URL target has to be downloaded first, which touches the
-        # network — so it needs the same scope-checked executor the
-        # network agent uses, built from --scope / --scope-file exactly
-        # the same way.
+    if is_url:
+        # A URL target has to be fetched, which touches the network — so
+        # it needs the same scope-checked executor the network agent
+        # uses, built from --scope / --scope-file exactly the same way.
         executor = _build_scoped_executor(args)
 
+    if is_url and not looks_like_binary_url(args.target):
+        # Target looks like a WEBSITE, not a direct binary link — the
+        # realistic case: a user gives CART a site, not a file. Discover
+        # downloadable binaries on that page first, then analyze each one.
+        print(f"\n=== Looking for downloadable binaries on {args.target} ===")
+        links = find_binary_links(executor, args.target)
+
+        if not links:
+            print("  No downloadable binaries found on this page.")
+            print("\n(No DB yet — nothing persisted. Core will plug in here next.)")
+            return
+
+        print(f"  Found {len(links)} downloadable binary link(s):")
+        for link in links:
+            print(f"    - {link}")
+
+        for link in links:
+            job = Job(job_id=f"run-{link}", agent="binary", target=link)
+            print(f"\n=== Running binary analysis against {link} ===")
+            result = run_binary_agent(job, executor=executor)
+            _print_binary_result(result)
+
+        print("\n(No DB yet — nothing persisted. Core will plug in here next.)")
+        return
+
+    # Direct target: either a local file path, or a URL that already
+    # points straight at a binary (e.g. found by the web agent's own
+    # crawl and handed over as a follow-up job).
+    job = Job(job_id="run-001", agent="binary", target=args.target)
     print(f"\n=== Running binary analysis against {args.target} ===")
     result = run_binary_agent(job, executor=executor)
+    _print_binary_result(result)
+    print("\n(No DB yet — nothing persisted. Core will plug in here next.)")
 
-    print(f"\n=== Result: {result.status} ===")
+
+def _print_binary_result(result) -> None:
+    print(f"=== Result: {result.status} ===")
     print(f"Findings: {len(result.findings)}")
     for finding in result.findings:
         print(f"  [{finding.finding_type}] {finding.description}")
         print(f"      evidence: {finding.evidence.summary}")
-
     if not result.findings:
         print("  (none found)")
-
-    print("\n(No DB yet — nothing persisted. Core will plug in here next.)")
 
 
 def _run_web(args: argparse.Namespace) -> None:
