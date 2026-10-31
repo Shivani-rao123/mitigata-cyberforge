@@ -15,11 +15,31 @@ import yaml
 
 
 class ScopeManager:
-    def __init__(self, scope_file: str = "config/scope.yaml") -> None:
-        with open(scope_file) as f:
-            config = yaml.safe_load(f)
+    def __init__(
+        self,
+        scope_file: str = "config/scope.yaml",
+        cidrs: list[str] | None = None,
+    ) -> None:
+        """
+        Scope can come from one of two places:
+          - `cidrs`: an explicit list of CIDR/IP strings for THIS run
+            (e.g. passed via --scope on the CLI, or a job's scope field
+            from the API later). Takes priority when given.
+          - `scope_file`: a YAML file with a `targets:` list, used as the
+            fallback default (handy for repeated local testing).
 
-        self._networks = [ipaddress.ip_network(t, strict=False) for t in config.get("targets", [])]
+        Scope is meant to be per-engagement, not a permanent setting baked
+        into a config file — `cidrs` is the primary path; `scope_file` only
+        exists so you don't have to pass --scope on every single run.
+        """
+        if cidrs is not None:
+            targets = cidrs
+        else:
+            with open(scope_file) as f:
+                config = yaml.safe_load(f)
+            targets = config.get("targets", [])
+
+        self._networks = [ipaddress.ip_network(t, strict=False) for t in targets]
         self._log_entries: list[tuple[str, bool]] = []
 
     def is_in_scope(self, target: str) -> bool:
