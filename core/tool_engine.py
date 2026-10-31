@@ -74,6 +74,12 @@ class ToolEngine:
         )
         return result.stdout
 
+    def has_tool(self, tool_name: str) -> bool:
+        """Whether `tool_name` has an entry in tools.yaml — lets a caller
+        check for an optional variant (e.g. a "{tool}_subnet" config)
+        before using it, without triggering ToolNotConfigured itself."""
+        return tool_name in self._config
+
     def parse(self, tool_name: str, raw_output: str):
         """Look up and call the configured parser for this tool's output."""
         tool = self._get_tool_config(tool_name)

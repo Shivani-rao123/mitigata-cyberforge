@@ -140,6 +140,86 @@ def test_cidr_range_target_is_passed_straight_through_to_nmap(monkeypatch):
     assert ("192.168.1.2", True) in logger.calls
 
 
+def test_subnet_scan_uses_nmap_subnet_config_not_the_single_host_one(monkeypatch):
+    """
+    A real-world bug: scanning a /24 with the single-host nmap config
+    (which includes -Pn, "treat every address as up, don't bother
+    checking") forced a full service-version scan of all 254 addresses
+    in the range, even the ones with no device on them at all — slow
+    enough to blow past the 300s timeout on an ordinary home LAN. The
+    fix is config/tools.yaml's "nmap_subnet" entry (no -Pn, so nmap's
+    own fast host discovery skips empty addresses first) — this test
+    confirms scan() actually reaches for it on a multi-address target,
+    and that the resulting command has no -Pn in it.
+    """
+    import subprocess
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        stdout = """<?xml version="1.0"?><nmaprun></nmaprun>"""
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nmap")
+
+    executor = RealScopedExecutor(is_in_scope=_always_in_scope, log_scope_check=lambda *a: None)
+    executor.scan("192.168.1.0/24")
+
+    assert "-Pn" not in captured["cmd"]
+    assert "-T4" in captured["cmd"]
+
+
+def test_single_ip_scan_still_uses_the_normal_pn_nmap_config(monkeypatch):
+    # A single host (not a range) keeps -Pn — some real single targets
+    # block ping and would be wrongly treated as down without it.
+    import subprocess
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        stdout = """<?xml version="1.0"?><nmaprun></nmaprun>"""
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nmap")
+
+    executor = RealScopedExecutor(is_in_scope=_always_in_scope, log_scope_check=lambda *a: None)
+    executor.scan("192.168.1.1")
+
+    assert "-Pn" in captured["cmd"]
+
+
+def test_a_32_cidr_is_treated_as_a_single_host_not_a_range(monkeypatch):
+    # "192.168.1.1/32" names exactly one address — same as a bare IP —
+    # so it should still get the single-host (-Pn) config, not the
+    # subnet one.
+    import subprocess
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        stdout = """<?xml version="1.0"?><nmaprun></nmaprun>"""
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nmap")
+
+    executor = RealScopedExecutor(is_in_scope=_always_in_scope, log_scope_check=lambda *a: None)
+    executor.scan("192.168.1.1/32")
+
+    assert "-Pn" in captured["cmd"]
+
+
 def test_cidr_range_target_outside_scope_is_blocked_before_any_scan():
     # "0.0.0.0/0" is the entire public IPv4 address space, never in
     # anyone's authorized scope — must be rejected the same way a

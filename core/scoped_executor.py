@@ -178,9 +178,32 @@ class RealScopedExecutor(ScopedExecutor):
     def scan(self, target: str, allowed_ports: list[int] | None = None) -> dict:
         scan_target = self._resolve_scan_target(target)
         self._guard(scan_target)
-        raw_output = self._engine.run(self._network_tool, target=scan_target, ports=allowed_ports)
-        parsed = self._engine.parse(self._network_tool, raw_output)
+        tool_name = self._pick_network_tool(scan_target)
+        raw_output = self._engine.run(tool_name, target=scan_target, ports=allowed_ports)
+        parsed = self._engine.parse(tool_name, raw_output)
         return self._revalidate_resolved_hosts(parsed)
+
+    def _pick_network_tool(self, scan_target: str) -> str:
+        """
+        Uses "{network_tool}_subnet" (e.g. "nmap_subnet") instead of the
+        plain tool when scanning a multi-address CIDR range — see that
+        config/tools.yaml entry's comment for why a subnet scan needs
+        different flags (skips -Pn so it doesn't full-scan every empty
+        address in the range). A single IP or a /32 uses the normal
+        tool unchanged. Falls back to the normal tool name if no
+        "_subnet" variant is configured (e.g. a custom network_tool
+        that hasn't defined one) rather than failing the whole scan.
+        """
+        try:
+            is_range = ipaddress.ip_network(scan_target, strict=False).num_addresses > 1
+        except ValueError:
+            is_range = False  # not a plain IP/CIDR (e.g. a bare hostname) — treat as single
+
+        if not is_range:
+            return self._network_tool
+
+        subnet_tool = f"{self._network_tool}_subnet"
+        return subnet_tool if self._engine.has_tool(subnet_tool) else self._network_tool
 
     def _resolve_scan_target(self, target: str) -> str:
         """

@@ -11,10 +11,38 @@
 tools:
   nmap:
     binary: nmap
+    # -Pn: skip host discovery, treat the target as up and fully probe it
+    # regardless. Correct for a SINGLE known target — some real hosts
+    # (a web server behind a firewall, say) block ping and would be
+    # wrongly skipped as "down" without it.
     command: ["nmap", "-sV", "-Pn", "-oX", "-", "{target}"]
     # when allowed_ports is given, "-p {ports}" is inserted after the binary
     ports_flag: ["-p", "{ports}"]
     timeout_seconds: 300
+    output_format: xml
+    parser: core.parsers.nmap:parse
+
+  # Used instead of `nmap` (see core/scoped_executor.py._resolve_scan_target
+  # / .scan()) whenever the target is a multi-address CIDR range rather
+  # than a single host — e.g. scanning a whole /24 LAN for every device
+  # on it. Deliberately does NOT use -Pn here: on a local subnet, nmap's
+  # discovery (ARP ping, effectively instant and not blocked by host
+  # firewalls the way ICMP/TCP ping can be) quickly finds which of the
+  # range's addresses actually have a device on them, so only those get
+  # the much slower -sV port/service scan — instead of -Pn forcing a
+  # full scan of all 254 addresses in a /24 even when most are empty,
+  # unused address space. This is what actually fixes a /24 scan timing
+  # out at 300s: the slow part was never the scan itself, it was -Pn
+  # forcing nmap to treat every address as a real host worth deep-
+  # scanning. -T4 (aggressive timing) further speeds up each probe —
+  # safe on a local, low-latency network, not recommended over the
+  # internet. A higher timeout is kept anyway as a safety margin for a
+  # busy/noisy network or a large address range.
+  nmap_subnet:
+    binary: nmap
+    command: ["nmap", "-sV", "-T4", "-oX", "-", "{target}"]
+    ports_flag: ["-p", "{ports}"]
+    timeout_seconds: 900
     output_format: xml
     parser: core.parsers.nmap:parse
 
