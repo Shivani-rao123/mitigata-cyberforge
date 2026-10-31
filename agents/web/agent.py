@@ -89,7 +89,7 @@ from common.html_extract import extract_links, extract_script_srcs
 from common.js_extract import extract_js_endpoints
 from common.redact import redact
 from common.secret_patterns import SECRET_PATTERNS
-from core.scoped_executor import ScopedExecutor, ToolNotConfigured, ToolNotInstalled
+from core.scoped_executor import ScopedExecutor, ScopeViolation, ToolNotConfigured, ToolNotInstalled
 
 # Paths worth a dedicated look even if nothing else about them is odd.
 # Matched against both the exact path and as a parent of deeper paths
@@ -317,16 +317,30 @@ def _crawl(
 def _scan_js_bundles(executor: ScopedExecutor, pages: list[dict], base_url: str) -> list[dict]:
     """
     The no-external-binary alternative to katana's -jsluice: fetches every
-    <script src=...> referenced by the crawled pages and regex-scans each
-    one for secrets (common/secret_patterns.py — the same patterns the
-    binary agent and katana parser use) and API-call endpoints
-    (common/js_extract.py). Narrower than a real JS parser, but needs
-    nothing beyond this project's existing Python dependencies.
+    SAME-HOST <script src=...> referenced by the crawled pages and
+    regex-scans each one for secrets (common/secret_patterns.py — the
+    same patterns the binary agent and katana parser use) and API-call
+    endpoints (common/js_extract.py). Narrower than a real JS parser, but
+    needs nothing beyond this project's existing Python dependencies.
+
+    Third-party scripts (a CDN-hosted library like code.jquery.com — the
+    overwhelmingly common case for <script src>) are skipped BEFORE
+    fetching, not just left to fail: they're out of scope by definition
+    (this agent only has authorization for the target's own host), not
+    useful for finding the target's own secrets/endpoints, and fetching
+    one used to crash the entire web stage with an unhandled
+    ScopeViolation the moment a page referenced one — wiping out every
+    finding the rest of the crawl had already produced. The per-URL
+    try/except below is defense in depth on top of that filter (e.g. a
+    same-host script whose DNS resolves somewhere unexpected), so a
+    single bad script still can't take down the whole stage.
 
     Returns js_findings in the same {"finding_kind": "secret"|"endpoint",
     "source": ..., ...} shape core/parsers/katana.py produces, so
     _check_js_finding() below handles either source identically.
     """
+    base_host = urlparse(base_url).netloc
+
     script_urls: list[str] = []
     seen_scripts: set[str] = set()
     for page in pages:
@@ -334,6 +348,8 @@ def _scan_js_bundles(executor: ScopedExecutor, pages: list[dict], base_url: str)
             if src in seen_scripts:
                 continue
             seen_scripts.add(src)
+            if urlparse(src).netloc != base_host:
+                continue  # third-party script (CDN, analytics, ...) — out of scope, skip
             script_urls.append(src)
             if len(script_urls) >= MAX_JS_FILES_PER_CRAWL:
                 break
@@ -344,7 +360,10 @@ def _scan_js_bundles(executor: ScopedExecutor, pages: list[dict], base_url: str)
     seen_secrets: set[tuple[str, str]] = set()
 
     for script_url in script_urls:
-        response = executor.http_get(script_url)
+        try:
+            response = executor.http_get(script_url)
+        except ScopeViolation:
+            continue  # e.g. DNS resolved this same-host-looking URL out of scope — skip, don't crash
         body = response.get("body", "")
         if not body:
             continue

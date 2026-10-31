@@ -13,7 +13,7 @@ can fire without katana installed at all.
 
 from agents.web.agent import run
 from common.contracts import Job
-from core.scoped_executor import ToolNotInstalled
+from core.scoped_executor import ScopeViolation, ToolNotInstalled
 from tests.mock_executor import MockScopedExecutor
 
 ALL_HEADERS = {
@@ -202,3 +202,80 @@ def test_same_script_src_on_multiple_pages_is_only_fetched_once():
     run(_job(crawler="requests"), executor)
 
     assert calls["count"] == 1
+
+
+def test_third_party_cdn_script_does_not_crash_the_whole_web_stage():
+    """Regression test for a real crash: a page referencing a
+    third-party CDN script (e.g. code.jquery.com) used to make
+    _scan_js_bundles() call executor.http_get() on an out-of-scope URL,
+    raising an unhandled ScopeViolation that wiped out EVERY finding the
+    rest of the crawl had already produced (observed live — the web
+    stage reported 0 findings and 1 stage error reading exactly
+    "'https://code.jquery.com/jquery-3.6.1.min.js' resolves to
+    151.101.129.155, which is out of scope"). Must now just skip the
+    third-party script and keep every other finding."""
+    calls = {"cdn": 0}
+
+    def http_get_fn(url):
+        if "code.jquery.com" in url:
+            calls["cdn"] += 1
+            raise ScopeViolation(
+                "'https://code.jquery.com/jquery-3.6.1.min.js' resolves to "
+                "151.101.129.155, which is out of scope"
+            )
+        return {"status": 200, "headers": ALL_HEADERS, "body": ""}
+
+    homepage = {
+        "url": "http://10.10.10.5:80/",
+        "status": 200,
+        "body": (
+            '<html><body>'
+            '<script src="https://code.jquery.com/jquery-3.6.1.min.js"></script>'
+            '<a href="/admin">admin</a>'
+            "</body></html>"
+        ),
+        "forms": [],
+    }
+    admin_page = {
+        "url": "http://10.10.10.5:80/admin",
+        "status": 200,
+        "body": "<html><body>admin panel</body></html>",
+        "forms": [],
+    }
+    executor = MockScopedExecutor(crawl_result=[homepage, admin_page], http_get_fn=http_get_fn)
+
+    result = run(_job(crawler="requests"), executor)
+
+    # the run completed and the unrelated, perfectly findable finding
+    # on the same page survived — nothing was wiped out
+    assert result.status == "completed"
+    assert [f for f in result.findings if f.finding_type == "sensitive_endpoint_found"]
+    # the third-party script was never even fetched — filtered out by
+    # same-host matching before http_get() was called at all
+    assert calls["cdn"] == 0
+
+
+def test_same_host_script_that_resolves_out_of_scope_is_skipped_not_fatal():
+    """Defense in depth: even a script whose URL LOOKS same-host (so the
+    cheap netloc filter lets it through) can still raise ScopeViolation
+    at fetch time (e.g. DNS resolves it somewhere unexpected) — that must
+    be caught and skipped too, not just the pre-filtered third-party
+    case above."""
+
+    def http_get_fn(url):
+        if url.endswith("app.js"):
+            raise ScopeViolation(f"{url!r} resolves outside scope")
+        return {"status": 200, "headers": ALL_HEADERS, "body": ""}
+
+    page = {
+        "url": "http://10.10.10.5:80/",
+        "status": 200,
+        "body": '<html><body><script src="/static/app.js"></script></body></html>',
+        "forms": [],
+    }
+    executor = MockScopedExecutor(crawl_result=[page], http_get_fn=http_get_fn)
+
+    result = run(_job(crawler="requests"), executor)
+
+    assert result.status == "completed"
+    assert not [f for f in result.findings if f.finding_type in ("js_secret_found", "js_endpoint_found")]
