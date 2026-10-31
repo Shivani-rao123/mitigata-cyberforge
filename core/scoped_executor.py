@@ -226,7 +226,21 @@ class RealScopedExecutor(ScopedExecutor):
         log_scope_check: Callable[[str, bool], None],
         tool_engine: ToolEngine | None = None,
         network_tool: str = "nmap",
-        crawl_max_pages: int = 25,
+        # 25 was too tight for a real file-listing app: TinyFileManager
+        # (confirmed against a real target) emits ~3 same-host link
+        # variants per file (a "view" link, a "download" link, and a
+        # decorative absolute "direct link" that round-trips through a
+        # redirect) plus one nav link per folder — a listing of just 5
+        # files + 2 folders already produces ~21 depth-1 links, enough
+        # to exhaust a 25-page budget in BFS order before a file ONE
+        # folder deep (e.g. ops/secret.txt) is ever reached, even though
+        # nothing is actually broken: each page fetch succeeds, each
+        # link resolves correctly, the crawl simply runs out of budget
+        # on top-level noise first. 150 gives real breathing room for
+        # that shape of site while staying well short of "crawl the
+        # entire internet" — still bounded, still fast against a single
+        # authorized target.
+        crawl_max_pages: int = 150,
         crawl_max_depth: int = 2,
         http_timeout_seconds: int = 10,
     ) -> None:
