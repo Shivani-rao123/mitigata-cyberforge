@@ -11,7 +11,7 @@
 tools:
   nmap:
     binary: nmap
-    command: ["nmap", "-sV", "-oX", "-", "{target}"]
+    command: ["nmap", "-sV", "-Pn", "-oX", "-", "{target}"]
     # when allowed_ports is given, "-p {ports}" is inserted after the binary
     ports_flag: ["-p", "{ports}"]
     timeout_seconds: 300
