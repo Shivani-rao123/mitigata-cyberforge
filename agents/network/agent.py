@@ -20,6 +20,7 @@ from common.contracts import (
     JobResult,
     ServiceOut,
 )
+from common.llm import choose_follow_ups
 from core.scoped_executor import ScopedExecutor
 
 # Service names treated as web surfaces worth a follow-up web-agent job.
@@ -76,6 +77,16 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
                         "context": {"host_ip": ip, "service_port": service.port},
                     }
                 )
+
+    # Optional LLM-in-the-loop pass (off by default — see
+    # common/llm.py's own docstring). The rule-based list above is
+    # built exactly as before either way; this can only trim/reorder
+    # it, never add to it. choose_follow_ups() returns None on any
+    # failure (including the feature being off), in which case the
+    # rule-based list is used completely unchanged.
+    chosen_follow_ups = choose_follow_ups(job, findings, follow_up_jobs)
+    if chosen_follow_ups is not None:
+        follow_up_jobs = chosen_follow_ups
 
     return JobResult(
         job_id=job.job_id,

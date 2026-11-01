@@ -11,3 +11,9 @@ requests==2.32.3        # web agent: http_get / crawl (FR-2)
 
 # --- needed once core's API exists ---
 flask==3.1.0            # api/routes.py (or swap for fastapi — partner's call)
+
+# --- optional: only needed if CART_LLM_FOLLOWUPS is turned on ---
+# common/llm.py's choose_follow_ups() imports this lazily and falls
+# back to the existing rule-based follow-up logic if it's missing —
+# safe to skip installing this entirely if you're not using that flag.
+anthropic==0.69.0       # common/llm.py — optional LLM-in-the-loop follow-up planner

@@ -424,3 +424,72 @@ def test_empty_crawl_still_runs_header_check_only():
     assert result.status == "completed"
     assert result.findings == []
     assert result.follow_up_jobs == []
+
+
+def test_llm_disabled_by_default_leaves_rule_based_binary_follow_ups_untouched(monkeypatch):
+    """common/llm.py's choose_follow_ups() is off by default — confirms
+    wiring it into this agent didn't change its own default,
+    already-tested binary-follow-up behavior at all."""
+    import common.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_ENABLED", False)
+
+    pages = [
+        {
+            "url": "http://10.10.10.5:80/downloads",
+            "status": 200,
+            "body": '<a href="/files/agent_setup.exe">Download</a>',
+            "forms": [],
+        }
+    ]
+    executor = MockScopedExecutor(
+        crawl_result=pages, http_result={"status": 200, "headers": ALL_HEADERS, "body": ""}
+    )
+    result = run(_job(), executor)
+
+    binary_jobs = [j for j in result.follow_up_jobs if j["agent"] == "binary"]
+    assert len(binary_jobs) == 1
+    assert binary_jobs[0]["target"] == "http://10.10.10.5:80/files/agent_setup.exe"
+
+
+def test_llm_enabled_can_filter_down_binary_follow_up_candidates(monkeypatch):
+    """When explicitly turned on and the model rejects the only
+    candidate (an empty [] response), the agent's own follow_up_jobs
+    reflects that -- proving the LLM layer actually reaches this
+    agent's return value, not just common/llm.py in isolation."""
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    import common.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_ENABLED", True)
+
+    fake_module = types.ModuleType("anthropic")
+
+    class _FakeTextBlock:
+        type = "text"
+        text = "[]"
+
+    def _client_factory(*args, **kwargs):
+        client = MagicMock()
+        client.messages.create.return_value = MagicMock(content=[_FakeTextBlock()])
+        return client
+
+    fake_module.Anthropic = _client_factory
+    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+    pages = [
+        {
+            "url": "http://10.10.10.5:80/downloads",
+            "status": 200,
+            "body": '<a href="/files/agent_setup.exe">Download</a>',
+            "forms": [],
+        }
+    ]
+    executor = MockScopedExecutor(
+        crawl_result=pages, http_result={"status": 200, "headers": ALL_HEADERS, "body": ""}
+    )
+    result = run(_job(), executor)
+
+    assert [j for j in result.follow_up_jobs if j["agent"] == "binary"] == []

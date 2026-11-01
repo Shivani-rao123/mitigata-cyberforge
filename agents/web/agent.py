@@ -88,6 +88,7 @@ from common.contracts import Evidence, FindingOut, Job, JobResult
 from common.flag_patterns import FLAG_PATTERNS
 from common.html_extract import extract_links, extract_script_srcs
 from common.js_extract import extract_js_endpoints
+from common.llm import choose_follow_ups
 from common.redact import redact
 from common.secret_patterns import SECRET_PATTERNS
 from core.scoped_executor import ScopedExecutor, ScopeViolation, ToolNotConfigured, ToolNotInstalled
@@ -277,6 +278,16 @@ def run(job: Job, executor: ScopedExecutor) -> JobResult:
 
     for js_finding in js_findings:
         findings.extend(_check_js_finding(js_finding, base_url))
+
+    # Optional LLM-in-the-loop pass (off by default — see
+    # common/llm.py's own docstring). Same pattern as
+    # agents/network/agent.py: the rule-based binary-link candidates
+    # above are built exactly as before either way; this can only
+    # trim/reorder that list, never add a target that wasn't already
+    # found by crawling.
+    chosen_follow_ups = choose_follow_ups(job, findings, follow_up_jobs)
+    if chosen_follow_ups is not None:
+        follow_up_jobs = chosen_follow_ups
 
     return JobResult(
         job_id=job.job_id,

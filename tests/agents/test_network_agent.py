@@ -71,3 +71,52 @@ def test_empty_scan_result_produces_no_hosts_or_findings():
     assert result.hosts == []
     assert result.findings == []
     assert result.follow_up_jobs == []
+
+
+def test_llm_disabled_by_default_leaves_the_rule_based_follow_up_jobs_untouched(monkeypatch):
+    """common/llm.py's choose_follow_ups() is off by default
+    (CART_LLM_FOLLOWUPS unset) — confirms wiring it into this agent
+    didn't change its own default, already-tested behavior at all."""
+    import common.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_ENABLED", False)
+    executor = MockScopedExecutor()
+
+    result = run(_make_job(), executor)
+
+    web_jobs = [j for j in result.follow_up_jobs if j["agent"] == "web"]
+    assert len(web_jobs) == 1
+    assert web_jobs[0]["target"] == "10.10.10.5:80"
+
+
+def test_llm_enabled_can_filter_down_the_rule_based_candidates(monkeypatch):
+    """When explicitly turned on and the model rejects every candidate
+    (an empty [] response), the agent's own follow_up_jobs reflects
+    that -- proving the LLM layer actually reaches this agent's return
+    value, not just common/llm.py in isolation."""
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    import common.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_ENABLED", True)
+
+    fake_module = types.ModuleType("anthropic")
+
+    class _FakeTextBlock:
+        type = "text"
+        text = "[]"
+
+    def _client_factory(*args, **kwargs):
+        client = MagicMock()
+        client.messages.create.return_value = MagicMock(content=[_FakeTextBlock()])
+        return client
+
+    fake_module.Anthropic = _client_factory
+    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+    executor = MockScopedExecutor()
+    result = run(_make_job(), executor)
+
+    assert result.follow_up_jobs == []
