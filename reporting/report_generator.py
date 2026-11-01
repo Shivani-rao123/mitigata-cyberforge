@@ -141,6 +141,12 @@ def _format_crown_jewel_section(ordered_findings: list[dict]) -> list[str]:
     step_number = next(i for i, f in enumerate(ordered_findings, start=1) if f is jewel)
     host = jewel.get("host_ip") or "an unresolved host"
     lines.append(f"{host} -- confirmed compromised at step {step_number} above ({jewel['finding_type']})")
+    description = jewel.get("description")
+    if description:
+        lines.append(f"  {description}")
+    evidence_summary = jewel.get("evidence_summary")
+    if evidence_summary:
+        lines.append(f"  Evidence: {evidence_summary}")
     return lines
 
 

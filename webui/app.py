@@ -283,6 +283,7 @@ def dashboard_crown_jewel(chain) -> dict | None:
                     "status": status,
                     "host_ip": stage.target,
                     "description": finding.description,
+                    "evidence_summary": finding.evidence.summary,
                 }
             )
 

@@ -27,6 +27,12 @@
       <div class="panel crown-jewel">
         <p class="panel-title">Crown Jewel reached</p>
         <p><strong>{{ crown_jewel.host_ip }}</strong> &mdash; confirmed compromised via <code>{{ crown_jewel.finding_type }}</code></p>
+        {% if crown_jewel.description %}
+          <p class="crown-jewel-detail">{{ crown_jewel.description }}</p>
+        {% endif %}
+        {% if crown_jewel.evidence_summary %}
+          <p class="crown-jewel-evidence">{{ crown_jewel.evidence_summary }}</p>
+        {% endif %}
       </div>
     {% endif %}
 

@@ -550,6 +550,10 @@ def test_results_page_renders_crown_jewel_banner_when_present():
     assert resp.status_code == 200
     assert "Crown Jewel reached" in html
     assert "header_auth_confirmed" in html
+    # Detail lines -- direct response to real feedback that the banner
+    # named the finding_type but gave no detail on how it was broken into.
+    assert "10.10.10.5/api/data accepted Basic auth" in html
+    assert "GET ... -&gt; 200" in html  # Jinja HTML-escapes "->" to "-&gt;"
 
 
 def test_results_page_shows_how_to_fix_text_for_a_real_finding():

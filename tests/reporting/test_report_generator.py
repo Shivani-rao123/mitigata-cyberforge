@@ -176,6 +176,28 @@ def test_crown_jewel_section_names_the_confirmed_compromised_host():
     assert "10.10.10.5 -- confirmed compromised at step 2 above (default_creds_found)" in report
 
 
+def test_crown_jewel_section_includes_description_and_evidence_for_detail():
+    # Direct response to real feedback: the banner/section named the
+    # host and finding_type but gave no detail on HOW it was broken
+    # into -- the description and evidence_summary answer that.
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "default_creds_found",
+            "description": "Credential pair confirmed against http://10.10.10.5:8085/admin/login",
+            "evidence_summary": "POST http://10.10.10.5:8085/admin/login with admin:admin -> 302",
+            "status": "confirmed",
+            "ptes_phase": "Exploitation",
+            "host_ip": "10.10.10.5",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert "Credential pair confirmed against http://10.10.10.5:8085/admin/login" in report
+    assert "Evidence: POST http://10.10.10.5:8085/admin/login with admin:admin -> 302" in report
+
+
 def test_crown_jewel_section_placeholder_when_nothing_confirmed():
     findings = [
         {
