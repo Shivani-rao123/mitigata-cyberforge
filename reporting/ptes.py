@@ -46,6 +46,11 @@ _PHASE_BY_FINDING_TYPE: dict[str, str] = {
     "unsafe_function_call": "Vulnerability Analysis",
     "reflected_input": "Vulnerability Analysis",
     "default_creds_found": "Vulnerability Analysis",  # see _STATUS_OVERRIDE below
+    "credential_pair_found": "Vulnerability Analysis",  # a real username+password pair, but not
+    # yet proven to grant access anywhere — stays here even once verification/verifier.py has
+    # tried it elsewhere, since THIS finding (the binary where it was found) isn't itself what
+    # gets exploited; see default_creds_found's own Exploitation promotion for where a
+    # successful login actually lands.
     # Exploitation — capturing a planted flag IS the proof of a
     # successful compromise (same reason confirmed default_creds_found
     # lands here), not merely evidence a weakness exists.

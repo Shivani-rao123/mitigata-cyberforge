@@ -36,13 +36,20 @@ class ScopedExecutor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def http_get(self, url: str) -> dict:
+    def http_get(self, url: str, cookies: dict | None = None) -> dict:
         """
         Perform a single HTTP(S) GET against `url`, scope-checked (including
         after DNS resolution). Returns {"status": int, "headers": dict,
         "body": str}. Does NOT follow redirects automatically — callers
         decide whether/how to follow, so redirects can't be used to leave
         scope silently.
+
+        `cookies`, when given, is sent with just this one request (never
+        stored/reused automatically — see RealScopedExecutor's
+        implementation). Added for verification/verifier.py's
+        credential-chaining step: re-fetching a page WITH the session a
+        just-confirmed login produced, to look for anything only an
+        authenticated session can see (e.g. a flag).
         """
         raise NotImplementedError
 
@@ -52,12 +59,16 @@ class ScopedExecutor(ABC):
         Perform a single HTTP(S) POST of form-encoded `data` against
         `url`, scope-checked the same way as http_get (including the
         resolved-IP recheck). Returns {"status": int, "headers": dict,
-        "body": str}. Does NOT follow redirects automatically, for the
-        same reason http_get doesn't — a redirect target is a new URL
-        that needs its own scope check before anything follows it.
-        Added for FR-6 (verification/verifier.py): submitting a
-        candidate login form's fields is the one case this project
-        needs an active write request for, rather than a passive GET.
+        "body": str, "cookies": dict}. Does NOT follow redirects
+        automatically, for the same reason http_get doesn't — a redirect
+        target is a new URL that needs its own scope check before
+        anything follows it. Added for FR-6 (verification/verifier.py):
+        submitting a candidate login form's fields is the one case this
+        project needs an active write request for, rather than a passive
+        GET. `cookies` in the return value is whatever Set-Cookie the
+        response carried (e.g. a session cookie from a successful
+        login) — verification/verifier.py threads this into a follow-up
+        http_get() call explicitly; nothing here persists it.
         """
         raise NotImplementedError
 
@@ -119,14 +130,31 @@ _MAX_REDIRECT_HOPS = 5
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
-def _bounded_get(url: str, timeout: int) -> requests.Response:
+def _bounded_get(url: str, timeout: int, cookies: dict | None = None) -> requests.Response:
     """GET `url` with the connection kept streaming, abandoned (closed)
     the moment _MAX_RESPONSE_BYTES is read. Returns a real
     requests.Response whose .raw has been drained up to that cap —
     callers read bytes via _bounded_bytes(), never response.content
     directly (that would try to keep reading the live, possibly-huge
-    stream)."""
-    response = requests.get(url, timeout=timeout, allow_redirects=False, stream=True)
+    stream).
+
+    `cookies`, when given, is sent as this one request's Cookie header —
+    NOT stored as a session (no requests.Session() anywhere in this
+    project; every call here is independent on purpose, so scope/
+    logging stay simple). Added for verification/verifier.py's
+    credential-chaining step (FR-6 + binary-derived creds): after a
+    login POST succeeds, its returned cookies are threaded through to a
+    follow-up authenticated GET explicitly, request by request, rather
+    than silently persisted."""
+    # cookies only passed through when actually given — several existing
+    # tests patch requests.get with a fake that doesn't accept a
+    # `cookies` kwarg at all; omitting it when unused keeps those
+    # passing unchanged instead of requiring every call site/fake to
+    # know about a parameter it never needed.
+    kwargs = {"timeout": timeout, "allow_redirects": False, "stream": True}
+    if cookies is not None:
+        kwargs["cookies"] = cookies
+    response = requests.get(url, **kwargs)
     response._bounded_bytes = _read_capped(response, _MAX_RESPONSE_BYTES)
     return response
 
@@ -151,6 +179,15 @@ def _read_capped(response: requests.Response, max_bytes: int) -> bytes:
             break
     response.close()  # stop reading the socket — we may have left data unread on purpose
     return b"".join(chunks)[:max_bytes]
+
+
+def _response_cookies(response: requests.Response) -> dict:
+    """response.cookies.get_dict(), defensively — see http_post()'s own
+    comment on why this isn't called directly."""
+    jar = getattr(response, "cookies", None)
+    if jar is not None and hasattr(jar, "get_dict"):
+        return jar.get_dict()
+    return {}
 
 
 def _decoded_text(response: requests.Response) -> str:
@@ -359,10 +396,10 @@ class RealScopedExecutor(ScopedExecutor):
     # http_get() / crawl() — web surface (FR-2)
     # ------------------------------------------------------------------
 
-    def http_get(self, url: str) -> dict:
+    def http_get(self, url: str, cookies: dict | None = None) -> dict:
         self._guard_url(url)
         try:
-            response = _bounded_get(url, self._http_timeout)
+            response = _bounded_get(url, self._http_timeout, cookies=cookies)
         except requests.RequestException as exc:
             return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
 
@@ -387,6 +424,16 @@ class RealScopedExecutor(ScopedExecutor):
             "status": response.status_code,
             "headers": dict(response.headers),
             "body": _decoded_text(response)[:50_000],
+            # Whatever Set-Cookie this response carried (e.g. a session
+            # cookie from a successful login) — see http_post()'s own
+            # abstract-method docstring for how this gets used. Read
+            # defensively (not response.cookies.get_dict() directly):
+            # a real requests.Response always has a usable .cookies
+            # jar, but several existing tests stand in a hand-rolled
+            # fake response object that doesn't define one at all —
+            # those should keep working exactly as before this field
+            # existed, just with an empty cookies dict.
+            "cookies": _response_cookies(response),
         }
 
     def crawl(self, base_url: str) -> list[dict]:

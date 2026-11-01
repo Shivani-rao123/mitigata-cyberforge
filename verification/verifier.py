@@ -29,6 +29,7 @@ import ast
 import re
 from urllib.parse import urljoin, urlparse
 
+from common.flag_patterns import FLAG_PATTERNS
 from core.scoped_executor import ScopedExecutor
 
 # Mirrors agents/web/agent.py's own PASSWORD_FIELD_NAMES exactly — kept
@@ -155,7 +156,47 @@ def _looks_like_successful_login(response: dict, login_page_url: str) -> bool:
     return False
 
 
-def _verify_default_creds_found(finding: dict, executor: ScopedExecutor) -> dict:
+def _check_for_flag_after_login(
+    executor: ScopedExecutor, login_page_url: str, cookies: dict
+) -> str | None:
+    """
+    Post-login follow-up, direct response to a real review flag:
+    "binary creds -> login -> a flag endpoint" was never demonstrated.
+    Re-fetches the login page's own site (its host root — the simplest,
+    always-available "something only reachable once authenticated might
+    now show up here" probe, since this project has no general-purpose
+    authenticated re-crawl) WITH the session cookies the successful
+    login just produced, and scans the response for a planted flag
+    using the exact same common/flag_patterns.py patterns
+    agents/web/agent.py's own _check_planted_flags() uses. Returns the
+    full flag text (never redacted — same reasoning as
+    common/flag_patterns.py's own docstring) or None if nothing matched
+    or the re-fetch itself failed.
+
+    Deliberately narrow: ONE authenticated GET, not a full authenticated
+    re-crawl of the site (this project's executor has no session-aware
+    crawl() at all — see http_get()'s own docstring on why cookies are
+    passed per-call, never stored). A flag that's only reachable via a
+    specific authenticated link/path (not the site root) won't be found
+    by this — a known, deliberate scope limit, not a silent gap.
+    """
+    if not cookies:
+        return None
+    site_root = f"{urlparse(login_page_url).scheme}://{urlparse(login_page_url).netloc}/"
+    response = executor.http_get(site_root, cookies=cookies)
+    body = response.get("body", "")
+    if not body:
+        return None
+    for _flag_type, (pattern, _description) in FLAG_PATTERNS.items():
+        match = pattern.search(body)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _verify_default_creds_found(
+    finding: dict, executor: ScopedExecutor, extra_credentials: list[tuple[str, str]] | None = None
+) -> dict:
     try:
         login_page_url, action_url, field_names = _parse_login_form_finding(finding)
     except UnparsableFinding as exc:
@@ -165,7 +206,16 @@ def _verify_default_creds_found(finding: dict, executor: ScopedExecutor) -> dict
         # one.
         return {"status": "flagged", "evidence_summary": f"verification skipped: {exc}"}
 
-    for username, password in WEAK_CREDENTIAL_PAIRS:
+    # Real, discovered credentials (e.g. agents/binary/agent.py's
+    # credential_pair_found, collected across the whole run by
+    # core/pipeline.py) are tried BEFORE the generic weak-credential
+    # guesses — they're actual evidence from this same engagement, not
+    # a blind guess, so they both deserve first shot and make for a
+    # much more convincing "found in binary -> works here" story in the
+    # evidence text when they succeed.
+    candidate_pairs = list(extra_credentials or []) + WEAK_CREDENTIAL_PAIRS
+
+    for username, password in candidate_pairs:
         payload = _build_payload(field_names, username, password)
         response = executor.http_post(action_url, payload)
         if response.get("status") == 0:
@@ -173,24 +223,23 @@ def _verify_default_creds_found(finding: dict, executor: ScopedExecutor) -> dict
             # evidence either way, try the next credential pair.
             continue
         if _looks_like_successful_login(response, login_page_url):
-            return {
-                "status": "confirmed",
-                "evidence_summary": (
-                    f"POST {action_url} with {username}:{password} -> "
-                    f"{response['status']}"
-                ),
-            }
+            evidence_summary = f"POST {action_url} with {username}:{password} -> {response['status']}"
+            flag = _check_for_flag_after_login(executor, login_page_url, response.get("cookies") or {})
+            if flag:
+                evidence_summary += f"; authenticated access revealed flag: {flag}"
+            return {"status": "confirmed", "evidence_summary": evidence_summary}
 
     return {
         "status": "false_positive",
         "evidence_summary": (
-            f"tried {len(WEAK_CREDENTIAL_PAIRS)} weak credential pair(s) against {action_url}; "
-            "none succeeded"
+            f"tried {len(candidate_pairs)} credential pair(s) against {action_url}; none succeeded"
         ),
     }
 
 
-def verify_finding(finding: dict, executor: ScopedExecutor) -> dict:
+def verify_finding(
+    finding: dict, executor: ScopedExecutor, extra_credentials: list[tuple[str, str]] | None = None
+) -> dict:
     """
     Verify one finding. `finding` is a dict shaped like a core/db.py
     `findings` row (at minimum: finding_type, description,
@@ -199,8 +248,15 @@ def verify_finding(finding: dict, executor: ScopedExecutor) -> dict:
     stands (the auto-confirm path), so callers should pass that through
     to core/db.py's update_finding_status() as-is (it leaves the stored
     evidence_summary untouched when given None).
+
+    `extra_credentials`, when given, is a list of (username, password)
+    pairs discovered elsewhere in the SAME run (core/pipeline.py builds
+    this from every credential_pair_found finding any stage produced)
+    — tried against a default_creds_found candidate before the small
+    built-in weak-credential list. Ignored for every other finding_type,
+    same as every other verify_finding parameter.
     """
     if finding.get("finding_type") == "default_creds_found":
-        return _verify_default_creds_found(finding, executor)
+        return _verify_default_creds_found(finding, executor, extra_credentials)
 
     return {"status": "confirmed", "evidence_summary": None}

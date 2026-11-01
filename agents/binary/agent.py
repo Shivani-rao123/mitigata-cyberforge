@@ -170,6 +170,7 @@ def run(
     findings: list[FindingOut] = []
     findings.extend(_check_secrets(engine, path))
     findings.extend(_check_unsafe_functions(engine, path))
+    findings.extend(_check_credential_pairs(engine, path))
 
     return JobResult(job_id=job.job_id, status="completed", findings=findings)
 
@@ -342,5 +343,101 @@ def _check_unsafe_functions(engine: ToolEngine, path: str) -> list[FindingOut]:
                     ),
                 )
             )
+
+    return findings
+
+
+# Case-insensitive field-NAME patterns for one half of a credential pair
+# — a plain "name=value" / "name: value" assignment pulled out of
+# `strings` output. Kept separate from both halves of
+# common/secret_patterns.py's generic_secret_assignment (which only
+# matches the password-ish side, and reports it standalone) since these
+# need to be PAIRED UP with each other afterwards, not individually
+# flagged.
+_USERNAME_ASSIGNMENT_RE = re.compile(r"(?i)\b(?:username|user|uname|login)\s*[:=]\s*([^\s'\"]{1,64})")
+_PASSWORD_ASSIGNMENT_RE = re.compile(r"(?i)\b(?:password|passwd|pwd|pass)\s*[:=]\s*([^\s'\"]{1,64})")
+
+# How many `strings`-output entries apart a username assignment and a
+# password assignment can be and still count as "the same credential
+# pair". A hardcoded test/demo account embedded in a binary as one
+# contiguous blob — e.g. a C string literal "username=admin\npassword=
+# S3cr3t!" — gets split by `strings` at the (non-printable) newline
+# into two ADJACENT list entries, not one; this window catches that
+# real case without pairing two assignments that just happen to appear
+# somewhere in the same binary with no actual relationship.
+_CREDENTIAL_PAIR_WINDOW = 3
+
+
+def _check_credential_pairs(engine: ToolEngine, path: str) -> list[FindingOut]:
+    """
+    Looks for a username assignment and a password assignment sitting
+    close together in the binary's extracted strings and reports them
+    as ONE credential_pair_found finding per pair — the missing link a
+    real review flagged: "binary has hardcoded creds -> those creds
+    should get tried against a login form found elsewhere -> a
+    successful login should lead to a flag", which needed this agent to
+    surface a credential as a PAIR, not two unrelated-looking secret
+    hits. core/pipeline.py reads these findings back out (via
+    evidence.raw_ref) across an entire run and feeds them into
+    verification/verifier.py's login-probe step as extra candidates,
+    on top of the handful of generic weak-credential guesses it already
+    tries.
+
+    Unlike every other finding this agent produces, evidence.raw_ref
+    deliberately carries the FULL, UNREDACTED "username:password" pair
+    — evidence.summary (what a human/report actually sees) stays
+    redacted. See common/contracts.py's Evidence docstring: raw_ref is
+    exactly "anything sensitive goes here, never embedded in summary" —
+    and here it's read back out programmatically (not just stored for a
+    report), which is exactly what raw_ref is for.
+
+    Only matches username-then-password order within the window (not
+    password-then-username) — a known, deliberate narrowing to keep
+    this check simple and low-false-positive; a lab whose planted
+    credential blob happens to list password first won't be caught by
+    this pairing (its two halves would still show up separately via
+    _check_secrets's generic_secret_assignment match, just not paired).
+    """
+    try:
+        raw = engine.run("strings", target=path)
+    except Exception:
+        return []
+    strings_list = engine.parse("strings", raw).get("strings", [])
+
+    findings: list[FindingOut] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for i, line in enumerate(strings_list):
+        user_match = _USERNAME_ASSIGNMENT_RE.search(line)
+        if not user_match:
+            continue
+        username = user_match.group(1)
+
+        for other in strings_list[i + 1 : i + 1 + _CREDENTIAL_PAIR_WINDOW]:
+            pass_match = _PASSWORD_ASSIGNMENT_RE.search(other)
+            if not pass_match:
+                continue
+            password = pass_match.group(1)
+            dedup_key = (username, password)
+            if dedup_key in seen_pairs:
+                break
+            seen_pairs.add(dedup_key)
+
+            findings.append(
+                FindingOut(
+                    finding_type="credential_pair_found",
+                    description=(
+                        f"Username/password pair found hardcoded together in "
+                        f"{Path(path).name} — candidate for login testing"
+                    ),
+                    host=None,
+                    evidence=Evidence(
+                        kind="strings_credential_pair",
+                        summary=f"username={username}, password={redact(password)}",
+                        raw_ref=f"{username}:{password}",
+                    ),
+                )
+            )
+            break  # one password match per username assignment is enough
 
     return findings

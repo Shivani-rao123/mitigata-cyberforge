@@ -44,6 +44,7 @@ FINDING_SEVERITY = {
     "hardcoded_secret": "high",
     "unsafe_function_call": "high",
     "default_creds_found": "high",
+    "credential_pair_found": "high",  # a real username+password pair found hardcoded in a binary
     "reflected_input": "high",
     "js_secret_found": "high",  # a secret hardcoded in a JS bundle is just as real as one in a binary
     "secret_in_file_found": "high",  # a secret in a crawled plain-text/config/log file (not JS) —

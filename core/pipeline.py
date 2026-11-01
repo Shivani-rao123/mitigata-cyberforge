@@ -81,6 +81,31 @@ def run_and_persist(
             for svc in host.services:
                 db.get_or_create_service(host_id, svc.port, svc.protocol, svc.service, version=svc.version)
 
+    # Credential-chaining (direct response to a real review flag: "binary
+    # has hardcoded creds -> those should get tried against a login form
+    # -> a successful login should lead to a flag" was never
+    # demonstrated). Collected ONCE, across every stage in this whole
+    # run, before verification starts — a credential_pair_found finding
+    # from a binary stage that ran AFTER the web stage that found the
+    # login form (the common order: network -> web finds both the login
+    # form and a binary link -> binary analyzes it) still needs to be
+    # available when that earlier web stage's default_creds_found
+    # finding gets verified below, since verification is this whole
+    # separate pass over ALL stages' findings, not interleaved with
+    # orchestration. See verification/verifier.py's own docstring for
+    # how these get used (tried before the generic weak-credential
+    # list).
+    extra_credentials: list[tuple[str, str]] = []
+    for stage in outcome.stages:
+        if stage.result is None:
+            continue
+        for finding in stage.result.findings:
+            if finding.finding_type != "credential_pair_found" or not finding.evidence.raw_ref:
+                continue
+            username, _, password = finding.evidence.raw_ref.partition(":")
+            if username and password:
+                extra_credentials.append((username, password))
+
     # Pass 2: persist every finding (against whichever host it names,
     # creating that host row on the fly if pass 1 didn't already),
     # then verify + PTES-tag it. stage_finding_ids tracks, per stage
@@ -114,6 +139,7 @@ def run_and_persist(
                     "evidence_summary": finding.evidence.summary,
                 },
                 executor,
+                extra_credentials=extra_credentials,
             )
             final_status = verdict["status"]
             if final_status != "flagged":
