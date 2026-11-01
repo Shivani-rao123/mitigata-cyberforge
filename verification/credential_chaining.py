@@ -92,9 +92,21 @@ def try_credentials_against_conventional_paths(
 
     host = urlparse(base_url).hostname or base_url
 
+    # Direct response to real-lab feedback ("it didn't try executing
+    # this creds") -- every credential IS tried against every
+    # conventional path/field-set guess below, but when nothing works
+    # this function used to just return [] with zero trace of that.
+    # Tracked per (path, credential) -- not exploded by field_names
+    # guess too, which would be noisy repetition of the same
+    # username:password with no new information -- and surfaced in the
+    # final no-match case below.
+    rejected: list[str] = []
+
     for path in CONVENTIONAL_LOGIN_PATHS:
         login_url = base_url.rstrip("/") + path
         for username, password in credentials:
+            path_rejected_status: int | None = None
+            succeeded = False
             for field_names in _GUESSED_FIELD_SETS:
                 payload = _build_payload(field_names, username, password)
                 response = executor.http_post(login_url, payload)
@@ -104,34 +116,44 @@ def try_credentials_against_conventional_paths(
                     # neither is evidence either way, try the next guess.
                     continue
                 if not _looks_like_successful_login(response, login_url):
+                    path_rejected_status = response.get("status")
                     continue
+                succeeded = True
+                break
 
-                evidence_summary = (
-                    f"POST {login_url} with {username}:{password} -> {response['status']} "
-                    "(conventional login path, not discovered by crawling)"
-                )
-                cookies = response.get("cookies") or {}
-                site_root = base_url.rstrip("/") + "/"
-                endpoint_results = explore_after_login(
-                    executor, cookies, list(discovered_endpoints or []), site_root
-                )
-                exploration_summary, flag = summarize_endpoint_access(endpoint_results)
-                if exploration_summary:
-                    evidence_summary += f"; {exploration_summary}"
-                if flag:
-                    evidence_summary += f"; authenticated access revealed flag: {flag}"
+            if not succeeded:
+                if path_rejected_status is not None:
+                    rejected.append(f"{username}:{password} @ {login_url} -> {path_rejected_status}")
+                continue
 
-                return [
-                    FindingOut(
-                        finding_type="default_creds_found",
-                        description=(
-                            f"Credential pair confirmed against {login_url} — this login path "
-                            "wasn't reachable by crawling, so a short list of conventional paths "
-                            "was tried directly with the credential found in a binary"
-                        ),
-                        host=host,
-                        evidence=Evidence(kind="conventional_login_probe", summary=evidence_summary),
-                    )
-                ]
+            evidence_summary = (
+                f"POST {login_url} with {username}:{password} -> {response['status']} "
+                "(conventional login path, not discovered by crawling)"
+            )
+            if rejected:
+                evidence_summary += f"; rejected first: {'; '.join(rejected)}"
+            cookies = response.get("cookies") or {}
+            site_root = base_url.rstrip("/") + "/"
+            endpoint_results = explore_after_login(
+                executor, cookies, list(discovered_endpoints or []), site_root
+            )
+            exploration_summary, flag = summarize_endpoint_access(endpoint_results)
+            if exploration_summary:
+                evidence_summary += f"; {exploration_summary}"
+            if flag:
+                evidence_summary += f"; authenticated access revealed flag: {flag}"
+
+            return [
+                FindingOut(
+                    finding_type="default_creds_found",
+                    description=(
+                        f"Credential pair confirmed against {login_url} — this login path "
+                        "wasn't reachable by crawling, so a short list of conventional paths "
+                        "was tried directly with the credential found in a binary"
+                    ),
+                    host=host,
+                    evidence=Evidence(kind="conventional_login_probe", summary=evidence_summary),
+                )
+            ]
 
     return []

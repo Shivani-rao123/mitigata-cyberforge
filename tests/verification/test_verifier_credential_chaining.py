@@ -146,3 +146,44 @@ def test_extra_credentials_omitted_behaves_exactly_as_before():
 
     assert result["status"] == "confirmed"
     assert "admin:admin" in result["evidence_summary"]
+
+
+def test_a_rejected_extra_credential_is_visible_in_the_confirmed_evidence():
+    # Direct response to real-lab feedback ("it didn't try executing
+    # this creds"): the real, discovered credential IS tried first (see
+    # test_extra_credentials_are_tried_before_the_generic_weak_list
+    # above) -- what was missing is any trace of that rejection when a
+    # LATER weak-list guess is the one that actually confirms. Proves
+    # it's provable, not just "trust me, it tried."
+    def _http_post_fn(url, data):
+        if data == {"username": "admin", "password": "admin"}:
+            return {"status": 302, "headers": {"Location": "/admin/dashboard"}, "body": ""}
+        # The real discovered credential -- wrong for this particular
+        # login form -- gets rejected.
+        return {"status": 302, "headers": {"Location": "/admin/login.php?error=1"}, "body": ""}
+
+    executor = MockScopedExecutor(http_post_fn=_http_post_fn)
+
+    result = verify_finding(
+        LOGIN_FINDING, executor, extra_credentials=[("cartlab", "B1na_917")]
+    )
+
+    assert result["status"] == "confirmed"
+    assert "admin:admin" in result["evidence_summary"]
+    assert "rejected first" in result["evidence_summary"]
+    assert "cartlab:B1na_917" in result["evidence_summary"]
+
+
+def test_false_positive_lists_every_rejected_credential_pair():
+    def _http_post_fn(url, data):
+        return {"status": 302, "headers": {"Location": "/admin/login.php?error=1"}, "body": ""}
+
+    executor = MockScopedExecutor(http_post_fn=_http_post_fn)
+
+    result = verify_finding(
+        LOGIN_FINDING, executor, extra_credentials=[("cartlab", "B1na_917")]
+    )
+
+    assert result["status"] == "false_positive"
+    assert "cartlab:B1na_917" in result["evidence_summary"]
+    assert "admin:admin" in result["evidence_summary"]

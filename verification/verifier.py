@@ -222,15 +222,28 @@ def _verify_default_creds_found(
     # evidence text when they succeed.
     candidate_pairs = list(extra_credentials or []) + WEAK_CREDENTIAL_PAIRS
 
+    # Direct response to real-lab feedback ("it didn't try executing
+    # this creds"): extra_credentials ARE tried first, before the
+    # generic weak-credential guesses (see comment above) -- what was
+    # actually missing is any VISIBLE trace of that when a LATER
+    # candidate is the one that succeeds. Every rejected attempt before
+    # the winner goes in `rejected`, in order, and is folded into the
+    # success evidence_summary below, so "did it even try the real
+    # credential" has a provable answer instead of a guess.
+    rejected: list[str] = []
+
     for username, password in candidate_pairs:
         payload = _build_payload(field_names, username, password)
         response = executor.http_post(action_url, payload)
         if response.get("status") == 0:
             # http_post itself failed (connection error, etc.) — not
             # evidence either way, try the next credential pair.
+            rejected.append(f"{username}:{password} -> request failed")
             continue
         if _looks_like_successful_login(response, login_page_url):
             evidence_summary = f"POST {action_url} with {username}:{password} -> {response['status']}"
+            if rejected:
+                evidence_summary += f"; rejected first: {'; '.join(rejected)}"
             cookies = response.get("cookies") or {}
 
             # Explore every endpoint THIS SAME RUN already discovered
@@ -252,10 +265,13 @@ def _verify_default_creds_found(
 
             return {"status": "confirmed", "evidence_summary": evidence_summary}
 
+        rejected.append(f"{username}:{password} -> {response['status']}")
+
     return {
         "status": "false_positive",
         "evidence_summary": (
-            f"tried {len(candidate_pairs)} credential pair(s) against {action_url}; none succeeded"
+            f"tried {len(candidate_pairs)} credential pair(s) against {action_url}; none succeeded "
+            f"({'; '.join(rejected)})"
         ),
     }
 
