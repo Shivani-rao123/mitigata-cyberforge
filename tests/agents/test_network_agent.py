@@ -102,19 +102,16 @@ def test_llm_enabled_can_filter_down_the_rule_based_candidates(monkeypatch):
 
     monkeypatch.setattr(llm_module, "LLM_ENABLED", True)
 
-    fake_module = types.ModuleType("anthropic")
+    fake_module = types.ModuleType("openai")
 
-    class _FakeTextBlock:
-        type = "text"
-        text = "[]"
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.chat = MagicMock()
+            message = MagicMock(content="[]")
+            self.chat.completions.create.return_value = MagicMock(choices=[MagicMock(message=message)])
 
-    def _client_factory(*args, **kwargs):
-        client = MagicMock()
-        client.messages.create.return_value = MagicMock(content=[_FakeTextBlock()])
-        return client
-
-    fake_module.Anthropic = _client_factory
-    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
 
     executor = MockScopedExecutor()
     result = run(_make_job(), executor)

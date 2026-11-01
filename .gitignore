@@ -13,3 +13,9 @@ fixtures/vulnerable_binary/vuln
 # Database() at module level) runs without an explicit db_path. Local
 # runtime state, not something to commit.
 store/cart.db
+
+# API keys / secrets (e.g. OPENAI_API_KEY for common/llm.py's optional
+# LLM-in-the-loop follow-up planner) — never committed. Copy
+# .env.example to .env and fill in your own key; common/llm.py loads
+# .env automatically via python-dotenv if it's present.
+.env

@@ -31,18 +31,34 @@ a liability, not a feature — every job that ever runs still has to
 trace back to a rule-based candidate a human wrote and a test covers.
 
 choose_follow_ups() returns None on ANY failure — no API key, the
-`anthropic` package not installed, a network/timeout error, a
+`openai` package not installed, a network/timeout error, a
 response that isn't valid JSON, or a response naming an index outside
 the candidate menu. Callers MUST treat None as "use the rule-based
 candidates unchanged", never as "run nothing" — a flaky or misconfigured
 LLM call should degrade this feature back to its own off-state, not
 degrade the scan itself.
+
+Reads OPENAI_API_KEY (and the two CART_LLM_* settings below) from a
+.env file in the project root if one exists (via python-dotenv) —
+see .env.example for the template. A real .env is gitignored; nothing
+here ever commits a key.
 """
 
 from __future__ import annotations
 
 import json
 import os
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed — fine, just means OPENAI_API_KEY/
+    # CART_LLM_* must already be set some other way (shell env,
+    # docker-compose `environment:`, etc). Doesn't affect LLM_ENABLED's
+    # own default of False either way.
+    pass
 
 from common.contracts import FindingOut, Job
 
@@ -52,7 +68,7 @@ LLM_ENABLED = os.environ.get("CART_LLM_FOLLOWUPS", "").strip().lower() in ("1", 
 # candidates" — this is not the kind of task that benefits from a
 # larger model, and keeping it small keeps latency and cost down for
 # something that runs on every single agent stage.
-_MODEL = os.environ.get("CART_LLM_MODEL", "claude-haiku-4-5")
+_MODEL = os.environ.get("CART_LLM_MODEL", "gpt-4o-mini")
 
 # An LLM call that hangs would otherwise stall a scan stage
 # indefinitely — nmap/requests calls elsewhere in this project all
@@ -91,7 +107,7 @@ def choose_follow_ups(
         return None
 
     try:
-        import anthropic
+        from openai import OpenAI
     except ImportError:
         # Optional dependency not installed — silently behave as if
         # the feature were off, rather than crashing a scan over a
@@ -99,7 +115,7 @@ def choose_follow_ups(
         return None
 
     try:
-        client = anthropic.Anthropic(timeout=_TIMEOUT_SECONDS)
+        client = OpenAI(timeout=_TIMEOUT_SECONDS)
         findings_summary = [
             {"finding_type": f.finding_type, "description": f.description} for f in findings
         ]
@@ -111,15 +127,24 @@ def choose_follow_ups(
                 "candidates": candidates,
             }
         )
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=_MODEL,
             max_tokens=256,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
         )
-        text = "".join(
-            block.text for block in response.content if getattr(block, "type", None) == "text"
-        )
+        text = (response.choices[0].message.content or "").strip()
+        # Some models wrap JSON in a markdown fence even when told not
+        # to — strip it rather than reject a perfectly good response
+        # over formatting. Anything else malformed still falls through
+        # to json.loads raising and the broad except below.
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
         indices = json.loads(text)
     except Exception:
         # Deliberately broad: a network error, an auth error, a
