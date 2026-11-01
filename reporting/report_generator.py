@@ -10,6 +10,13 @@ format:
     2. [Exploitation] Default credentials (admin/admin) confirmed on
        /admin, granting dashboard access
 
+    Remediation Recommendations:
+    - default_creds_found: Change this account's password immediately...
+
+Also appends a "Remediation Recommendations" section (PRD Bonus B-3)
+after the Attack Path listing -- one plain-English fix per distinct
+finding_type that appears in the path, via reporting/remediation.py.
+
 Split into two layers on purpose:
   - format_attack_path(findings) is pure data-in/string-out — no DB,
     easy to test with plain dicts.
@@ -29,6 +36,8 @@ is a deliberate, meaningful answer rather than a gap to paper over.
 from __future__ import annotations
 
 import re
+
+from reporting.remediation import remediation_for
 
 # Real PTES phase order (Pre-Engagement and Post Exploitation are part
 # of the standard but nothing this project emits maps to them yet — see
@@ -96,7 +105,36 @@ def format_attack_path(findings: list[dict]) -> str:
 
     for i, finding in enumerate(ordered, start=1):
         lines.append(f"{i}. [{finding['ptes_phase']}] {_describe(finding)}")
+
+    lines.append("")
+    lines.extend(_format_remediation_section(ordered))
     return "\n".join(lines)
+
+
+def _format_remediation_section(ordered_findings: list[dict]) -> list[str]:
+    """PRD Bonus B-3 -- plain-English fix per finding, appended after
+    the Attack Path listing. Walks the SAME `ordered` findings
+    format_attack_path already built (so it's automatically restricted
+    to the attack path's own in-scope findings: no false_positive, no
+    operational notes, no unknown finding_type), deduped by
+    finding_type since the same weakness class often shows up on
+    several hosts/endpoints and the fix is identical each time."""
+    seen_finding_types: set[str] = set()
+    lines = ["Remediation Recommendations:"]
+    had_any = False
+    for finding in ordered_findings:
+        finding_type = finding.get("finding_type")
+        if finding_type in seen_finding_types:
+            continue
+        fix = remediation_for(finding_type, status=finding.get("status", "flagged"))
+        if fix is None:
+            continue
+        seen_finding_types.add(finding_type)
+        had_any = True
+        lines.append(f"- {finding_type}: {fix}")
+    if not had_any:
+        lines.append("(nothing to remediate)")
+    return lines
 
 
 def build_attack_path(db, target_id: int) -> str:

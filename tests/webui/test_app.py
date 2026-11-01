@@ -443,3 +443,46 @@ def test_webui_app_module_does_not_import_the_old_sequential_chain():
 
     assert not hasattr(app_module, "run_full_chain")
     assert hasattr(app_module, "run_target")
+
+
+def test_remediation_filter_returns_plain_english_fix_text():
+    from webui.app import remediation_filter
+
+    text = remediation_filter("hardcoded_secret")
+    assert text is not None
+    assert "rotate" in text.lower()
+
+
+def test_remediation_filter_returns_none_for_operational_notes():
+    from webui.app import remediation_filter
+
+    assert remediation_filter("redirect_followed") is None
+
+
+def test_results_page_shows_how_to_fix_text_for_a_real_finding():
+    """PRD Bonus B-3 end-to-end: a real finding on the results page
+    carries its plain-English fix right next to it, not just the raw
+    finding_type/description."""
+
+    def _finding(finding_type):
+        return FindingOut(
+            finding_type=finding_type, description=f"desc for {finding_type}", evidence=Evidence(kind="k", summary="s")
+        )
+
+    network_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[],
+        follow_up_jobs=[{"agent": "web", "target": "1.2.3.4:80", "context": {}}],
+    )
+    web_result = JobResult(job_id="x", status="completed", findings=[_finding("missing_security_header")])
+
+    with patch("core.orchestrator.run_network_agent", return_value=network_result):
+        with patch("core.orchestrator.run_web_agent", return_value=web_result):
+            with app.test_client() as c:
+                resp = c.post("/scan", data={"target": "1.2.3.4", "scope": "1.2.3.4/32"})
+
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "How to fix:" in html
+    assert "X-Frame-Options" in html or "header" in html.lower()

@@ -38,6 +38,7 @@ from common.contracts import Job
 from common.llm import choose_follow_ups
 from core.orchestrator import run_target
 from core.scoped_executor import RealScopedExecutor
+from reporting.remediation import remediation_for
 from scope.manager import ScopeManager
 from verification.authenticated_exploration import collect_candidate_endpoints
 from verification.credential_chaining import try_credentials_against_conventional_paths
@@ -77,6 +78,14 @@ FINDING_SEVERITY = {
 @app.template_filter("severity")
 def severity_filter(finding_type: str) -> str:
     return FINDING_SEVERITY.get(finding_type, "medium")
+
+
+@app.template_filter("remediation")
+def remediation_filter(finding_type: str, status: str = "flagged") -> str | None:
+    """PRD Bonus B-3 -- plain-English fix for a finding, or None when
+    there's nothing to show (false_positive, an operational note, or a
+    finding_type reporting/remediation.py doesn't know yet)."""
+    return remediation_for(finding_type, status=status)
 
 
 # Display-only ordering — doesn't change what's found or how, just how

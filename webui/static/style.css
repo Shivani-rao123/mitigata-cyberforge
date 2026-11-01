@@ -295,6 +295,18 @@ button:hover { background: var(--accent-hover); }
   word-break: break-all;
 }
 
+.finding-fix {
+  font-size: 13px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--panel-border);
+  color: var(--text-dim);
+}
+
+.finding-fix strong {
+  color: inherit;
+}
+
 .no-findings {
   color: var(--text-dim);
   font-size: 13px;

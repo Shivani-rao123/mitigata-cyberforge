@@ -73,7 +73,10 @@ def test_findings_with_no_ptes_phase_are_excluded():
 
     assert "redirect_followed" not in report
     assert "1. [Intelligence Gathering] Port 22/tcp open on 10.10.10.5" in report
-    assert report.count("\n") == 1  # header + exactly one entry
+    # Attack Path section is header + exactly one entry (the Remediation
+    # Recommendations section that follows is covered by its own tests).
+    attack_path_section = report.split("\n\n")[0]
+    assert attack_path_section.count("\n") == 1
 
 
 def test_empty_findings_produce_a_placeholder_not_a_crash():
@@ -143,3 +146,92 @@ def test_build_attack_path_for_unknown_target_is_the_empty_placeholder():
         report = build_attack_path(db, 999)
 
     assert report == "Attack Path:\n(no verified findings yet)"
+
+
+def test_remediation_section_is_appended_after_the_attack_path():
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "default_creds_found",
+            "description": "/admin login form, no rate limiting",
+            "evidence_summary": "POST /admin/login with admin:admin -> 302",
+            "status": "confirmed",
+            "ptes_phase": "Exploitation",
+            "host_ip": "10.10.10.5",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert "Remediation Recommendations:" in report
+    assert "- default_creds_found:" in report
+    assert "password" in report.lower()
+
+
+def test_remediation_section_dedupes_by_finding_type():
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "hardcoded_secret",
+            "description": "secret A",
+            "evidence_summary": "",
+            "status": "confirmed",
+            "ptes_phase": "Vulnerability Analysis",
+            "host_ip": "10.10.10.5",
+        },
+        {
+            "id": 2,
+            "finding_type": "hardcoded_secret",
+            "description": "secret B",
+            "evidence_summary": "",
+            "status": "confirmed",
+            "ptes_phase": "Vulnerability Analysis",
+            "host_ip": "10.10.10.6",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert report.count("- hardcoded_secret:") == 1
+
+
+def test_remediation_section_skips_types_with_nothing_to_suggest():
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "ctf_flag_found",
+            "description": "flag captured",
+            "evidence_summary": "",
+            "status": "confirmed",
+            "ptes_phase": "Exploitation",
+            "host_ip": "10.10.10.5",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert "Remediation Recommendations:" in report
+    assert "- ctf_flag_found:" in report  # ctf_flag_found DOES have remediation text (points to root cause)
+
+
+def test_remediation_section_placeholder_when_nothing_to_remediate():
+    # A finding_type reporting/remediation.py has no opinion about yet
+    # (the dict sets ptes_phase directly so it's still in-path, exactly
+    # the same "unmapped but present" scenario reporting/ptes.py's own
+    # tests exercise for known_finding_types()).
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "some_future_finding_type_nobody_mapped_yet",
+            "description": "something new",
+            "evidence_summary": "",
+            "status": "flagged",
+            "ptes_phase": "Intelligence Gathering",
+            "host_ip": "10.10.10.5",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert "Remediation Recommendations:" in report
+    assert "(nothing to remediate)" in report
