@@ -80,12 +80,23 @@ class ScopedExecutor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def crawl(self, base_url: str) -> list[dict]:
+    def crawl(self, base_url: str, cookies: dict | None = None) -> list[dict]:
         """
         Crawl from `base_url`, staying on the same host, up to a small depth
         and page limit. Every request goes through the same scope checks as
         http_get. Returns a list of {"url": str, "status": int, "body": str,
         "forms": [{"action": str, "method": str, "inputs": [str]}]}.
+
+        `cookies`, when given, is sent as every request's Cookie header
+        for this ENTIRE crawl -- not stored as a session, same one-shot-
+        per-call discipline as http_get()'s own `cookies` param, just
+        applied to every request the crawl makes instead of one. Added
+        for verification/authenticated_exploration.py's
+        authenticated_crawl(): once a login succeeds, the ONLY way to
+        find a page that's only linked to once you're authenticated (a
+        "secrets" page reachable from a post-login dashboard, say) is to
+        crawl with the session attached, not just re-fetch a fixed list
+        of already-known URLs.
         """
         raise NotImplementedError
 
@@ -452,7 +463,7 @@ class RealScopedExecutor(ScopedExecutor):
             "cookies": _response_cookies(response),
         }
 
-    def crawl(self, base_url: str) -> list[dict]:
+    def crawl(self, base_url: str, cookies: dict | None = None) -> list[dict]:
         self._guard_url(base_url)
         base_host = urlparse(base_url).netloc
 
@@ -470,7 +481,7 @@ class RealScopedExecutor(ScopedExecutor):
                 continue  # out of scope — skip silently, already logged by _guard_url
 
             try:
-                response, redirect_chain = self._fetch_following_redirects(url)
+                response, redirect_chain = self._fetch_following_redirects(url, cookies=cookies)
             except requests.RequestException:
                 continue
 
@@ -542,7 +553,7 @@ class RealScopedExecutor(ScopedExecutor):
         return pages
 
     def _fetch_following_redirects(
-        self, url: str, max_hops: int = _MAX_REDIRECT_HOPS
+        self, url: str, max_hops: int = _MAX_REDIRECT_HOPS, cookies: dict | None = None
     ) -> tuple[requests.Response, list[str]]:
         """
         GETs `url`, following any 3xx Location header up to `max_hops`
@@ -550,6 +561,10 @@ class RealScopedExecutor(ScopedExecutor):
         crawled link (so a redirect can never be used to silently leave
         scope), and each hop added to the returned chain so the caller
         can tell a redirect happened at all.
+
+        `cookies`, when given, is sent on every hop — see crawl()'s own
+        docstring for why (an authenticated crawl needs the session
+        attached to every request it makes, redirects included).
 
         Returns (final_response, chain) where chain is the list of URLs
         actually followed (NOT including the original `url, only hops
@@ -564,7 +579,7 @@ class RealScopedExecutor(ScopedExecutor):
         """
         chain: list[str] = []
         current_url = url
-        response = _bounded_get(current_url, self._http_timeout)
+        response = _bounded_get(current_url, self._http_timeout, cookies=cookies)
 
         hops = 0
         while response.status_code in _REDIRECT_STATUSES and hops < max_hops:
@@ -577,7 +592,7 @@ class RealScopedExecutor(ScopedExecutor):
                 break  # out of scope — stop here, don't follow off-scope (logged by _guard_url)
 
             current_url = next_url
-            response = _bounded_get(current_url, self._http_timeout)
+            response = _bounded_get(current_url, self._http_timeout, cookies=cookies)
             chain.append(current_url)
             hops += 1
 

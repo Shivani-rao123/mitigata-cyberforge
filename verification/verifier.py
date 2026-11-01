@@ -32,7 +32,7 @@ from urllib.parse import urljoin, urlparse
 from common.flag_patterns import FLAG_PATTERNS
 from core.scoped_executor import ScopedExecutor
 from verification.authenticated_exploration import (
-    explore_authenticated_endpoints,
+    explore_after_login,
     summarize_endpoint_access,
 )
 
@@ -236,16 +236,13 @@ def _verify_default_creds_found(
             # Explore every endpoint THIS SAME RUN already discovered
             # (sensitive_endpoint_found / directory_listing_enabled —
             # see verification/authenticated_exploration.py's own
-            # docstring) now that there's a session to use, plus the
-            # site root as an always-available fallback (the one check
-            # this used to be limited to). Supersedes a bare
-            # _check_for_flag_after_login() call here — that function
-            # is kept as-is for other callers (e.g.
-            # verification/credential_chaining.py) that only have the
-            # root to check.
+            # docstring) PLUS a real authenticated crawl from the site
+            # root, so a page only linked once logged in (a dashboard
+            # pointing at a "secrets" page, say) gets followed too, not
+            # just a single re-fetch of the root.
             site_root = f"{urlparse(login_page_url).scheme}://{urlparse(login_page_url).netloc}/"
-            endpoint_results = explore_authenticated_endpoints(
-                executor, cookies, list(discovered_endpoints or []) + [(site_root, None)]
+            endpoint_results = explore_after_login(
+                executor, cookies, list(discovered_endpoints or []), site_root
             )
             exploration_summary, flag = summarize_endpoint_access(endpoint_results)
             if exploration_summary:

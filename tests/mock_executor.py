@@ -44,6 +44,7 @@ class MockScopedExecutor(ScopedExecutor):
         http_post_result: dict | None = None,
         http_post_fn=None,
         crawl_result: list[dict] | None = None,
+        crawl_fn=None,
         crawl_js_result: dict | None = None,
         raise_on_crawl_js: Exception | None = None,
         download_result: bytes | None = None,
@@ -55,6 +56,7 @@ class MockScopedExecutor(ScopedExecutor):
         self._http_post_result = http_post_result
         self._http_post_fn = http_post_fn
         self._crawl_result = crawl_result
+        self._crawl_fn = crawl_fn
         self._download_result = download_result
         self._raise_on_download = raise_on_download
 
@@ -109,7 +111,15 @@ class MockScopedExecutor(ScopedExecutor):
             return self._http_post_result
         return {"status": 200, "headers": {}, "body": ""}
 
-    def crawl(self, base_url: str) -> list[dict]:
+    def crawl(self, base_url: str, cookies: dict | None = None) -> list[dict]:
+        if self._crawl_fn is not None:
+            # Same opt-in kwargs pattern as http_get()'s own
+            # `_http_get_fn` above — only pass `cookies` through when a
+            # caller actually supplied them, so an existing single-arg
+            # `crawl_fn(base_url)` test fixture keeps working unchanged.
+            if cookies is not None:
+                return self._crawl_fn(base_url, cookies=cookies)
+            return self._crawl_fn(base_url)
         if self._crawl_result is not None:
             return self._crawl_result
         return []

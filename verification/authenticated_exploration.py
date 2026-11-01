@@ -18,16 +18,25 @@ Given the session cookies a successful login just produced AND the
 list of endpoints THIS SAME RUN already discovered (every
 sensitive_endpoint_found / directory_listing_enabled finding any stage
 produced -- URLs the crawler found but, at the time, had no credential
-to try against), re-fetch each one WITH those cookies. Still not a
-general-purpose authenticated re-crawl (same underlying limit: no
-session-aware crawl() to call), but it covers every endpoint the
-engagement already knows about instead of a single guess at the root.
+to try against), re-fetch each one WITH those cookies
+(explore_authenticated_endpoints()).
 
 Each endpoint's PRE-login status is carried through and reported as
 `required_auth` (401/403 means the endpoint told us outright, before
 any login, that it needs a session) -- directly the "identify whether
 the discovered endpoint requires authentication" requirement, using
 evidence already gathered rather than a fresh probe.
+
+A second round of real-lab feedback went further: a fixed list of
+already-known URLs still misses a page only LINKED once logged in (a
+post-login dashboard pointing at a "secrets" page nobody could see
+before authenticating). core/scoped_executor.py's crawl() now accepts
+`cookies`, so authenticated_crawl() below runs an actual, real crawl
+WITH the session attached instead of a single re-fetch -- following
+exactly that kind of chain automatically. explore_after_login()
+combines both: everything this run already knew about PLUS everything
+newly reachable once logged in. That's the function
+verification/verifier.py and verification/credential_chaining.py call.
 """
 
 from __future__ import annotations
@@ -134,6 +143,105 @@ def explore_authenticated_endpoints(
             )
         )
     return results
+
+
+def authenticated_crawl(executor: ScopedExecutor, cookies: dict, site_root: str) -> list[EndpointAccessResult]:
+    """
+    Direct response to real-lab feedback: a fixed list of already-known
+    URLs misses a page that's only LINKED once you're logged in (a
+    "secrets" page reached from a post-login dashboard, say) — the
+    pre-login crawler never saw it, so it never became a
+    sensitive_endpoint_found/directory_listing_enabled candidate for
+    explore_authenticated_endpoints() above to re-check.
+
+    This runs a real CRAWL from `site_root` with `cookies` attached to
+    every request (core/scoped_executor.py's crawl() now accepts
+    `cookies` for exactly this) — reusing the same same-host, bounded
+    depth/page-limit crawl agents/web/agent.py's own pre-login crawl
+    uses, so a chain like "login succeeds -> dashboard links to
+    /secrets -> /secrets has the flag" gets followed automatically
+    instead of needing each hop guessed in advance.
+
+    Every crawled page gets `pre_auth_status=None` here (this module has
+    no prior observation of it — it was never reachable without a
+    session) and `required_auth=False` (not a claim it DIDN'T need
+    auth, just that this function makes no claim either way about its
+    pre-login status) — contrast with explore_authenticated_endpoints()
+    above, whose candidates carry real pre-login status because the
+    crawler actually saw them before login.
+
+    Returns [] immediately if `cookies` is empty — nothing to crawl
+    authenticated with.
+    """
+    if not cookies:
+        return []
+
+    pages = executor.crawl(site_root, cookies=cookies)
+
+    results: list[EndpointAccessResult] = []
+    for page in pages:
+        body = page.get("body") or ""
+        flag = None
+        for _flag_type, (pattern, _description) in FLAG_PATTERNS.items():
+            match = pattern.search(body)
+            if match:
+                flag = match.group(0)
+                break
+        results.append(
+            EndpointAccessResult(
+                url=page.get("url", site_root),
+                pre_auth_status=None,
+                post_auth_status=page.get("status", 0),
+                required_auth=False,
+                flag=flag,
+            )
+        )
+    return results
+
+
+def explore_after_login(
+    executor: ScopedExecutor,
+    cookies: dict,
+    discovered_endpoints: list[tuple[str, int | None]],
+    site_root: str,
+) -> list[EndpointAccessResult]:
+    """
+    The full "what can this session reach" answer: combines
+    explore_authenticated_endpoints() (every endpoint THIS RUN already
+    knew about before logging in — so its `required_auth` tagging is
+    real) with authenticated_crawl() (an actual crawl from `site_root`
+    WITH the session, following links the pre-login crawler never saw
+    because they only exist once authenticated).
+
+    This is the one function verification/verifier.py and
+    verification/credential_chaining.py should call after a successful
+    login — it replaces calling explore_authenticated_endpoints()
+    directly with `discovered_endpoints + [(site_root, None)]` tacked
+    on, because that only ever re-fetched the root ONCE and never
+    followed any link from it. The explicit site_root re-fetch is kept
+    here too (not just left to the crawl) so a flag planted directly at
+    the root is still found even in an environment where crawl() can't
+    run but a plain GET can.
+
+    Deduped by URL, first occurrence wins — explore_authenticated_
+    endpoints()'s results are listed first so a URL this run already
+    had a real pre-login status for keeps that `required_auth` tagging
+    rather than being silently overwritten by the crawl's own
+    less-informed pre_auth_status=None version of the same URL.
+    """
+    known_results = explore_authenticated_endpoints(
+        executor, cookies, list(discovered_endpoints) + [(site_root, None)]
+    )
+    crawled_results = authenticated_crawl(executor, cookies, site_root)
+
+    seen: set[str] = {r.url for r in known_results}
+    combined = list(known_results)
+    for result in crawled_results:
+        if result.url in seen:
+            continue
+        seen.add(result.url)
+        combined.append(result)
+    return combined
 
 
 def summarize_endpoint_access(results: list[EndpointAccessResult]) -> tuple[str, str | None]:

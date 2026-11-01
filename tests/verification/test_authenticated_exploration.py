@@ -13,7 +13,9 @@ from __future__ import annotations
 from common.contracts import Evidence, FindingOut
 from tests.mock_executor import MockScopedExecutor
 from verification.authenticated_exploration import (
+    authenticated_crawl,
     collect_candidate_endpoints,
+    explore_after_login,
     explore_authenticated_endpoints,
     summarize_endpoint_access,
 )
@@ -143,3 +145,90 @@ def test_summarize_reports_endpoint_auth_method_and_flag():
 
 def test_summarize_returns_empty_for_no_results():
     assert summarize_endpoint_access([]) == ("", None)
+
+
+def test_authenticated_crawl_returns_empty_without_cookies():
+    executor = MockScopedExecutor(crawl_result=[{"url": "http://10.10.10.5/", "status": 200, "body": "flag{x}"}])
+    assert authenticated_crawl(executor, {}, "http://10.10.10.5/") == []
+
+
+def test_authenticated_crawl_follows_a_page_only_linked_once_logged_in():
+    # Direct response to real-lab feedback: a login succeeded but the
+    # flag was on a page only reachable by following a link FROM the
+    # post-login page -- not in any pre-login-discovered endpoint list.
+    def _crawl_fn(base_url, cookies=None):
+        assert cookies == {"session": "abc"}
+        assert base_url == "http://10.10.10.5/"
+        return [
+            {"url": "http://10.10.10.5/", "status": 200, "body": "welcome, see <a href='/secrets'>secrets</a>"},
+            {"url": "http://10.10.10.5/secrets", "status": 200, "body": "flag{crawled_after_login}"},
+        ]
+
+    executor = MockScopedExecutor(crawl_fn=_crawl_fn)
+
+    results = authenticated_crawl(executor, {"session": "abc"}, "http://10.10.10.5/")
+
+    by_url = {r.url: r for r in results}
+    assert by_url["http://10.10.10.5/secrets"].flag == "flag{crawled_after_login}"
+    assert by_url["http://10.10.10.5/"].flag is None
+    # Never observed pre-login -- only reachable via the authenticated crawl itself.
+    assert all(r.pre_auth_status is None for r in results)
+
+
+def test_explore_after_login_combines_known_endpoints_with_the_authenticated_crawl():
+    def _http_get_fn(url, cookies=None):
+        if url == "http://10.10.10.5/admin/backup.zip":
+            return {"status": 200, "headers": {}, "body": "flag{known_endpoint_flag}"}
+        return {"status": 200, "headers": {}, "body": "ok"}
+
+    def _crawl_fn(base_url, cookies=None):
+        return [{"url": "http://10.10.10.5/secrets", "status": 200, "body": "flag{crawled_flag}"}]
+
+    executor = MockScopedExecutor(http_get_fn=_http_get_fn, crawl_fn=_crawl_fn)
+
+    results = explore_after_login(
+        executor,
+        {"session": "abc"},
+        [("http://10.10.10.5/admin/backup.zip", 403)],
+        "http://10.10.10.5/",
+    )
+
+    by_url = {r.url: r for r in results}
+    assert by_url["http://10.10.10.5/admin/backup.zip"].flag == "flag{known_endpoint_flag}"
+    assert by_url["http://10.10.10.5/admin/backup.zip"].required_auth is True
+    assert by_url["http://10.10.10.5/secrets"].flag == "flag{crawled_flag}"
+
+
+def test_explore_after_login_dedupes_preferring_the_known_endpoints_required_auth_tag():
+    # Same URL appears in both the known-endpoints list (with a real
+    # pre-login 403) and the crawl's own results -- the known version's
+    # required_auth=True must win, not be silently overwritten.
+    def _http_get_fn(url, cookies=None):
+        return {"status": 200, "headers": {}, "body": ""}
+
+    def _crawl_fn(base_url, cookies=None):
+        return [{"url": "http://10.10.10.5/admin", "status": 200, "body": ""}]
+
+    executor = MockScopedExecutor(http_get_fn=_http_get_fn, crawl_fn=_crawl_fn)
+
+    results = explore_after_login(
+        executor, {"session": "abc"}, [("http://10.10.10.5/admin", 403)], "http://10.10.10.5/"
+    )
+
+    matching = [r for r in results if r.url == "http://10.10.10.5/admin"]
+    assert len(matching) == 1
+    assert matching[0].required_auth is True
+
+
+def test_explore_after_login_still_checks_the_bare_site_root():
+    def _http_get_fn(url, cookies=None):
+        if url == "http://10.10.10.5/":
+            return {"status": 200, "headers": {}, "body": "flag{root_flag}"}
+        return {"status": 200, "headers": {}, "body": ""}
+
+    executor = MockScopedExecutor(http_get_fn=_http_get_fn)  # no crawl_fn configured
+
+    results = explore_after_login(executor, {"session": "abc"}, [], "http://10.10.10.5/")
+
+    _, flag = summarize_endpoint_access(results)
+    assert flag == "flag{root_flag}"

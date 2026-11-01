@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 
 from common.contracts import Evidence, FindingOut
 from core.scoped_executor import ScopedExecutor
-from verification.authenticated_exploration import explore_authenticated_endpoints, summarize_endpoint_access
+from verification.authenticated_exploration import explore_after_login, summarize_endpoint_access
 from verification.verifier import _build_payload, _looks_like_successful_login
 
 # A short, deliberately small list — this is confirming a specific,
@@ -111,8 +111,9 @@ def try_credentials_against_conventional_paths(
                     "(conventional login path, not discovered by crawling)"
                 )
                 cookies = response.get("cookies") or {}
-                endpoint_results = explore_authenticated_endpoints(
-                    executor, cookies, list(discovered_endpoints or []) + [(base_url.rstrip("/") + "/", None)]
+                site_root = base_url.rstrip("/") + "/"
+                endpoint_results = explore_after_login(
+                    executor, cookies, list(discovered_endpoints or []), site_root
                 )
                 exploration_summary, flag = summarize_endpoint_access(endpoint_results)
                 if exploration_summary:
