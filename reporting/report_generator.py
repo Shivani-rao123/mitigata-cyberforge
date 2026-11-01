@@ -10,12 +10,21 @@ format:
     2. [Exploitation] Default credentials (admin/admin) confirmed on
        /admin, granting dashboard access
 
+    Crown Jewel:
+    10.10.10.5 -- confirmed compromised at step 2 above (default_creds_found)
+
     Remediation Recommendations:
     - default_creds_found: Change this account's password immediately...
 
-Also appends a "Remediation Recommendations" section (PRD Bonus B-3)
-after the Attack Path listing -- one plain-English fix per distinct
-finding_type that appears in the path, via reporting/remediation.py.
+Also appends two more sections after the Attack Path listing:
+  - "Crown Jewel" (PRD Bonus B-2) -- names the single protected host/
+    endpoint the chain above actually broke into, via
+    reporting/crown_jewel.py. The ordered attack path IS the chain (a
+    PTES-phase-ordered walk from discovery through to compromise); this
+    section just calls out which step at the end of it is the prize.
+  - "Remediation Recommendations" (PRD Bonus B-3) -- one plain-English
+    fix per distinct finding_type that appears in the path, via
+    reporting/remediation.py.
 
 Split into two layers on purpose:
   - format_attack_path(findings) is pure data-in/string-out — no DB,
@@ -37,6 +46,7 @@ from __future__ import annotations
 
 import re
 
+from reporting.crown_jewel import identify_crown_jewel
 from reporting.remediation import remediation_for
 
 # Real PTES phase order (Pre-Engagement and Post Exploitation are part
@@ -107,8 +117,31 @@ def format_attack_path(findings: list[dict]) -> str:
         lines.append(f"{i}. [{finding['ptes_phase']}] {_describe(finding)}")
 
     lines.append("")
+    lines.extend(_format_crown_jewel_section(ordered))
+    lines.append("")
     lines.extend(_format_remediation_section(ordered))
     return "\n".join(lines)
+
+
+def _format_crown_jewel_section(ordered_findings: list[dict]) -> list[str]:
+    """PRD Bonus B-2 -- names the protected host/endpoint the attack
+    path above actually broke into, via reporting/crown_jewel.py.
+    `ordered_findings` is the SAME PTES-phase-ordered list
+    format_attack_path already built, so "step N above" below refers
+    to that exact numbering."""
+    jewel = identify_crown_jewel(ordered_findings)
+    lines = ["Crown Jewel:"]
+    if jewel is None:
+        lines.append("(no protected host was confirmed compromised this run)")
+        return lines
+
+    # Identity, not value, lookup -- two findings can be value-equal
+    # dicts (same type/description/etc. on different hosts) and we
+    # want THIS exact finding's position, not the first value match.
+    step_number = next(i for i, f in enumerate(ordered_findings, start=1) if f is jewel)
+    host = jewel.get("host_ip") or "an unresolved host"
+    lines.append(f"{host} -- confirmed compromised at step {step_number} above ({jewel['finding_type']})")
+    return lines
 
 
 def _format_remediation_section(ordered_findings: list[dict]) -> list[str]:

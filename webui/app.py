@@ -30,6 +30,8 @@ Then open http://127.0.0.1:5500 in a browser.
 
 from __future__ import annotations
 
+import re
+
 from flask import Flask, render_template, request
 
 from agents.basic_auth.agent import run as run_basic_auth_agent
@@ -38,6 +40,7 @@ from common.contracts import Job
 from common.llm import choose_follow_ups
 from core.orchestrator import run_target
 from core.scoped_executor import RealScopedExecutor
+from reporting.crown_jewel import identify_crown_jewel
 from reporting.remediation import remediation_for
 from scope.manager import ScopeManager
 from verification.authenticated_exploration import collect_candidate_endpoints
@@ -233,6 +236,59 @@ def _apply_credential_chaining(chain, executor, target: str) -> None:
                         break
 
 
+# Same evidence_summary format verification/verifier.py writes for a
+# confirmed default_creds_found finding -- mirrors
+# reporting/report_generator.py's own private copy of this pattern
+# (duplicated here, not imported, since that one is report_generator's
+# private implementation detail and this dashboard path has its own
+# reason to check it -- see dashboard_crown_jewel() below).
+_CONFIRMED_CREDS_RE = re.compile(r"with (\S+:\S+) ->")
+
+
+def dashboard_crown_jewel(chain) -> dict | None:
+    """PRD Bonus B-2 for the dashboard: same reporting/crown_jewel.py
+    logic the CLI/API text report uses, adapted to chain.stages'
+    findings instead of core/db.py rows.
+
+    The DB path has a reliable `status` column (core/pipeline.py
+    explicitly calls db.update_finding_status after verification); the
+    dashboard's FindingOut objects don't get that same mutation (see
+    _apply_credential_chaining() above, which rewrites
+    finding.evidence.summary on a confirmed login but never sets a
+    status field) -- so "confirmed" here is derived straight from the
+    strongest signal each finding type actually carries on the
+    dashboard:
+      - header_auth_confirmed / ctf_flag_found: always true proof by
+        construction (see their own agents' docstrings), no extra check.
+      - default_creds_found: only counts once its evidence_summary has
+        been rewritten to the "POST ... with user:pass -> status" form
+        that _apply_credential_chaining() above produces on a real,
+        confirmed login -- the as-discovered description never matches
+        that pattern.
+    """
+    candidates: list[dict] = []
+    for stage in chain.stages:
+        if not stage.result:
+            continue
+        for finding in stage.result.findings:
+            if finding.finding_type == "default_creds_found":
+                if not _CONFIRMED_CREDS_RE.search(finding.evidence.summary or ""):
+                    continue
+                status = "confirmed"
+            else:
+                status = "confirmed"
+            candidates.append(
+                {
+                    "finding_type": finding.finding_type,
+                    "status": status,
+                    "host_ip": stage.target,
+                    "description": finding.description,
+                }
+            )
+
+    return identify_crown_jewel(candidates)
+
+
 def categorize_chain(chain) -> dict:
     """Buckets every finding across every stage of `chain` into the
     four results.html cards, plus the raw discovered host/service list
@@ -324,7 +380,13 @@ def scan():
 
     _apply_credential_chaining(chain, executor, target)
 
-    return render_template("results.html", chain=chain, target=target, categories=categorize_chain(chain))
+    return render_template(
+        "results.html",
+        chain=chain,
+        target=target,
+        categories=categorize_chain(chain),
+        crown_jewel=dashboard_crown_jewel(chain),
+    )
 
 
 if __name__ == "__main__":

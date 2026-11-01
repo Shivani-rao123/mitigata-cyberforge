@@ -148,6 +148,53 @@ def test_build_attack_path_for_unknown_target_is_the_empty_placeholder():
     assert report == "Attack Path:\n(no verified findings yet)"
 
 
+def test_crown_jewel_section_names_the_confirmed_compromised_host():
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "open_port",
+            "description": "Port 80/tcp open",
+            "evidence_summary": "80/tcp open http",
+            "status": "flagged",
+            "ptes_phase": "Intelligence Gathering",
+            "host_ip": "10.10.10.5",
+        },
+        {
+            "id": 2,
+            "finding_type": "default_creds_found",
+            "description": "/admin login form, no rate limiting",
+            "evidence_summary": "POST /admin/login with admin:admin -> 302",
+            "status": "confirmed",
+            "ptes_phase": "Exploitation",
+            "host_ip": "10.10.10.5",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert "Crown Jewel:" in report
+    assert "10.10.10.5 -- confirmed compromised at step 2 above (default_creds_found)" in report
+
+
+def test_crown_jewel_section_placeholder_when_nothing_confirmed():
+    findings = [
+        {
+            "id": 1,
+            "finding_type": "open_port",
+            "description": "Port 80/tcp open",
+            "evidence_summary": "",
+            "status": "flagged",
+            "ptes_phase": "Intelligence Gathering",
+            "host_ip": "10.10.10.5",
+        },
+    ]
+
+    report = format_attack_path(findings)
+
+    assert "Crown Jewel:" in report
+    assert "(no protected host was confirmed compromised this run)" in report
+
+
 def test_remediation_section_is_appended_after_the_attack_path():
     findings = [
         {

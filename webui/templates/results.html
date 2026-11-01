@@ -23,6 +23,13 @@
       Authorized scope: <code>{{ chain.scope | join(', ') if chain.scope else '(none configured)' }}</code>
     </div>
 
+    {% if crown_jewel %}
+      <div class="panel crown-jewel">
+        <p class="panel-title">Crown Jewel reached</p>
+        <p><strong>{{ crown_jewel.host_ip }}</strong> &mdash; confirmed compromised via <code>{{ crown_jewel.finding_type }}</code></p>
+      </div>
+    {% endif %}
+
     <div class="summary-row">
       <div class="stat">
         <div class="n">{{ chain.stages | length }}</div>

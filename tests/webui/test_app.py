@@ -459,6 +459,99 @@ def test_remediation_filter_returns_none_for_operational_notes():
     assert remediation_filter("redirect_followed") is None
 
 
+def test_dashboard_crown_jewel_is_none_when_nothing_confirmed():
+    from webui.app import dashboard_crown_jewel
+
+    def _finding(finding_type):
+        return FindingOut(
+            finding_type=finding_type, description=f"desc for {finding_type}", evidence=Evidence(kind="k", summary="s")
+        )
+
+    network_result = JobResult(job_id="x", status="completed", findings=[_finding("open_port")])
+
+    class _FakeStage:
+        agent = "network"
+        target = "1.2.3.4"
+        result = network_result
+
+    class _FakeChain:
+        stages = [_FakeStage()]
+
+    assert dashboard_crown_jewel(_FakeChain()) is None
+
+
+def test_dashboard_crown_jewel_recognizes_a_confirmed_default_creds_found():
+    from webui.app import dashboard_crown_jewel
+
+    confirmed_finding = FindingOut(
+        finding_type="default_creds_found",
+        description="/admin login",
+        evidence=Evidence(kind="k", summary="POST /admin/login with admin:admin -> 302"),
+    )
+    web_result = JobResult(job_id="x", status="completed", findings=[confirmed_finding])
+
+    class _FakeStage:
+        agent = "web"
+        target = "10.10.10.5:80"
+        result = web_result
+
+    class _FakeChain:
+        stages = [_FakeStage()]
+
+    jewel = dashboard_crown_jewel(_FakeChain())
+    assert jewel is not None
+    assert jewel["finding_type"] == "default_creds_found"
+    assert jewel["host_ip"] == "10.10.10.5:80"
+
+
+def test_dashboard_crown_jewel_ignores_an_unconfirmed_default_creds_found():
+    from webui.app import dashboard_crown_jewel
+
+    flagged_finding = FindingOut(
+        finding_type="default_creds_found",
+        description="/admin login form, no rate limiting",
+        evidence=Evidence(kind="k", summary="form discovered, not yet tried"),
+    )
+    web_result = JobResult(job_id="x", status="completed", findings=[flagged_finding])
+
+    class _FakeStage:
+        agent = "web"
+        target = "10.10.10.5:80"
+        result = web_result
+
+    class _FakeChain:
+        stages = [_FakeStage()]
+
+    assert dashboard_crown_jewel(_FakeChain()) is None
+
+
+def test_results_page_renders_crown_jewel_banner_when_present():
+    """End-to-end: a real scan that confirms a header-auth bypass shows
+    the Crown Jewel banner on the results page."""
+    confirmed_finding = FindingOut(
+        finding_type="header_auth_confirmed",
+        description="10.10.10.5/api/data accepted Basic auth",
+        evidence=Evidence(kind="http_response", summary="GET ... -> 200"),
+    )
+    network_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[],
+        follow_up_jobs=[{"agent": "web", "target": "10.10.10.5:80", "context": {}}],
+    )
+    web_result = JobResult(job_id="x", status="completed", findings=[confirmed_finding])
+
+    with patch("core.orchestrator.run_network_agent", return_value=network_result):
+        with patch("core.orchestrator.run_web_agent", return_value=web_result):
+            with app.test_client() as c:
+                resp = c.post("/scan", data={"target": "10.10.10.5", "scope": "10.10.10.5/32"})
+
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "Crown Jewel reached" in html
+    assert "header_auth_confirmed" in html
+
+
 def test_results_page_shows_how_to_fix_text_for_a_real_finding():
     """PRD Bonus B-3 end-to-end: a real finding on the results page
     carries its plain-English fix right next to it, not just the raw
