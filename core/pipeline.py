@@ -19,8 +19,10 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+from agents.basic_auth.agent import run as run_basic_auth_agent
 from agents.web.agent import _to_base_url
-from common.contracts import FindingOut
+from common.contracts import FindingOut, Job
+from common.llm import choose_follow_ups
 from core.db import Database
 from core.orchestrator import OrchestrationResult, StageResult, run_target
 from core.scoped_executor import ScopedExecutor
@@ -29,6 +31,13 @@ from reporting.report_generator import build_attack_path
 from verification.authenticated_exploration import collect_candidate_endpoints
 from verification.credential_chaining import try_credentials_against_conventional_paths
 from verification.verifier import verify_finding
+
+# 401/403 statuses mean the endpoint told us, before any credential
+# was ever attached, that it needs some kind of authentication — these
+# are the only candidates worth proposing to agents/basic_auth/agent.py
+# below. A 200 endpoint is already accessible; trying header-auth
+# against it would prove nothing either way.
+_PROTECTED_STATUSES = (401, 403)
 
 
 def _host_key_for_finding(finding: FindingOut, stage: StageResult) -> str:
@@ -213,6 +222,57 @@ def run_and_persist(
             if new_findings:
                 any_default_creds_confirmed = True
                 break  # one confirmed login across every host checked is enough
+
+    # Pass 2.6: HTTP header-based auth (Basic/Bearer) against any
+    # endpoint that answered 401/403 before any credential was tried —
+    # the one auth scheme nothing above can reach, since there's no
+    # HTML <form> to POST to at all (see agents/basic_auth/agent.py's
+    # own docstring). Deliberately NOT an unconditional rule like pass
+    # 2.5 above: whether this runs AT ALL for a given candidate is an
+    # explicit LLM decision (reusing common/llm.py's choose_follow_ups()
+    # — same mechanism as the network/web follow-up planner, different
+    # fallback policy). If the LLM is off, unavailable, or its call
+    # fails (None), this fails CLOSED -- no header-auth attempts happen
+    # at all, unlike pass 2.5's rule-based fallback, because there is
+    # no pre-existing "always try this" behavior to fall back to here.
+    protected_endpoints = [(url, status) for url, status in discovered_endpoints if status in _PROTECTED_STATUSES]
+    if extra_credentials and protected_endpoints:
+        candidates = [
+            {"agent": "basic_auth", "target": url, "context": {"username": username, "password": password}}
+            for url, _status in protected_endpoints
+            for username, password in extra_credentials
+        ]
+        planning_job = Job(job_id="basic-auth-planner", agent="web", target=target)
+        approved = choose_follow_ups(planning_job, all_findings, candidates)
+        if approved is None:
+            approved = []  # fail CLOSED -- see this pass's own comment above
+
+        for candidate in approved:
+            new_findings = run_basic_auth_agent(
+                executor,
+                candidate["target"],
+                candidate["context"]["username"],
+                candidate["context"]["password"],
+            )
+            for finding in new_findings:
+                host_key = finding.host or candidate["target"]
+                host_id = host_ip_to_id.get(host_key)
+                if host_id is None:
+                    host_id = db.get_or_create_host(host_key)
+                    host_ip_to_id[host_key] = host_id
+
+                finding_id = db.insert_finding(
+                    host_id=host_id,
+                    agent="basic_auth",
+                    finding_type=finding.finding_type,
+                    description=finding.description,
+                    evidence_summary=finding.evidence.summary,
+                    evidence_raw_ref=finding.evidence.raw_ref,
+                )
+                db.update_finding_status(finding_id, "confirmed", evidence_summary=None)
+                db.set_finding_ptes_phase(
+                    finding_id, ptes_phase_for(finding.finding_type, status="confirmed")
+                )
 
     # Pass 3: attack_edges along the same follow_up_jobs chains
     # core.orchestrator.run_target() already used to decide what ran

@@ -32,13 +32,21 @@ from __future__ import annotations
 
 from flask import Flask, render_template, request
 
+from agents.basic_auth.agent import run as run_basic_auth_agent
 from agents.web.agent import _to_base_url
+from common.contracts import Job
+from common.llm import choose_follow_ups
 from core.orchestrator import run_target
 from core.scoped_executor import RealScopedExecutor
 from scope.manager import ScopeManager
 from verification.authenticated_exploration import collect_candidate_endpoints
 from verification.credential_chaining import try_credentials_against_conventional_paths
 from verification.verifier import verify_finding
+
+# Same meaning as core/pipeline.py's own copy of this constant: a
+# 401/403 endpoint told us, before any credential was attached, that
+# it needs some kind of authentication.
+_PROTECTED_STATUSES = (401, 403)
 
 app = Flask(__name__)
 
@@ -54,6 +62,7 @@ FINDING_SEVERITY = {
     "secret_in_file_found": "high",  # a secret in a crawled plain-text/config/log file (not JS) —
     # e.g. an exposed handover note, .env, or backup config found via a crawled link
     "ctf_flag_found": "high",  # the engagement's own success marker — always worth top billing
+    "header_auth_confirmed": "high",  # a credential confirmed via an Authorization header, no form involved
     "sensitive_endpoint_found": "medium",
     "directory_listing_enabled": "medium",
     "redirect_followed": "info",  # operational note: the crawl followed a redirect to a new host/path
@@ -105,7 +114,7 @@ ENDPOINT_FINDING_TYPES = {"sensitive_endpoint_found", "js_endpoint_found", "dire
 OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback", "duplicate_binary_skipped"}
 
 
-def _apply_credential_chaining(chain, executor) -> None:
+def _apply_credential_chaining(chain, executor, target: str) -> None:
     """Dashboard-only counterpart to core/pipeline.py's own pass 2 /
     pass 2.5 (see that module's docstring for the full rationale) —
     this is the SAME gap a real lab run surfaced: a scan run through
@@ -180,6 +189,39 @@ def _apply_credential_chaining(chain, executor) -> None:
         if new_findings:
             stage.result.findings.extend(new_findings)
             break  # one confirmed login across every host checked is enough
+
+    # Dashboard counterpart to core/pipeline.py's own pass 2.6 — HTTP
+    # header-auth (Basic/Bearer) against any endpoint that answered
+    # 401/403, the one auth scheme nothing above can reach (no HTML
+    # form to POST to at all; see agents/basic_auth/agent.py's own
+    # docstring). Same fail-CLOSED policy as core/pipeline.py: this is
+    # NOT an unconditional rule like the conventional-path try above —
+    # whether it runs at all is an explicit LLM decision, and if the
+    # LLM is off, unavailable, or its call fails, nothing here runs.
+    protected_endpoints = [(url, status) for url, status in discovered_endpoints if status in _PROTECTED_STATUSES]
+    if extra_credentials and protected_endpoints:
+        candidates = [
+            {"agent": "basic_auth", "target": url, "context": {"username": username, "password": password}}
+            for url, _status in protected_endpoints
+            for username, password in extra_credentials
+        ]
+        planning_job = Job(job_id="basic-auth-planner", agent="web", target=target)
+        approved = choose_follow_ups(planning_job, all_findings, candidates)
+        if approved is None:
+            approved = []  # fail CLOSED -- see comment above
+
+        for candidate in approved:
+            new_findings = run_basic_auth_agent(
+                executor,
+                candidate["target"],
+                candidate["context"]["username"],
+                candidate["context"]["password"],
+            )
+            if new_findings:
+                for stage in chain.stages:
+                    if stage.agent == "web" and stage.result is not None:
+                        stage.result.findings.extend(new_findings)
+                        break
 
 
 def categorize_chain(chain) -> dict:
@@ -271,7 +313,7 @@ def scan():
     except Exception as exc:  # noqa: BLE001 — show it in the UI, not a stack trace
         return render_template("index.html", error=f"Could not start scan: {exc}")
 
-    _apply_credential_chaining(chain, executor)
+    _apply_credential_chaining(chain, executor, target)
 
     return render_template("results.html", chain=chain, target=target, categories=categorize_chain(chain))
 

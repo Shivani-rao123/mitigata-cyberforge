@@ -36,7 +36,7 @@ class ScopedExecutor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def http_get(self, url: str, cookies: dict | None = None) -> dict:
+    def http_get(self, url: str, cookies: dict | None = None, headers: dict | None = None) -> dict:
         """
         Perform a single HTTP(S) GET against `url`, scope-checked (including
         after DNS resolution). Returns {"status": int, "headers": dict,
@@ -50,6 +50,13 @@ class ScopedExecutor(ABC):
         credential-chaining step: re-fetching a page WITH the session a
         just-confirmed login produced, to look for anything only an
         authenticated session can see (e.g. a flag).
+
+        `headers`, when given, is sent as extra request headers for just
+        this one call (merged on top of whatever requests sends by
+        default — never replacing scope-relevant headers). Added for
+        agents/basic_auth/agent.py: a credential tried as an
+        `Authorization: Basic/Bearer ...` header, for an endpoint with no
+        HTML login form to POST to at all.
         """
         raise NotImplementedError
 
@@ -130,7 +137,9 @@ _MAX_REDIRECT_HOPS = 5
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
-def _bounded_get(url: str, timeout: int, cookies: dict | None = None) -> requests.Response:
+def _bounded_get(
+    url: str, timeout: int, cookies: dict | None = None, headers: dict | None = None
+) -> requests.Response:
     """GET `url` with the connection kept streaming, abandoned (closed)
     the moment _MAX_RESPONSE_BYTES is read. Returns a real
     requests.Response whose .raw has been drained up to that cap —
@@ -145,15 +154,22 @@ def _bounded_get(url: str, timeout: int, cookies: dict | None = None) -> request
     credential-chaining step (FR-6 + binary-derived creds): after a
     login POST succeeds, its returned cookies are threaded through to a
     follow-up authenticated GET explicitly, request by request, rather
-    than silently persisted."""
-    # cookies only passed through when actually given — several existing
-    # tests patch requests.get with a fake that doesn't accept a
-    # `cookies` kwarg at all; omitting it when unused keeps those
-    # passing unchanged instead of requiring every call site/fake to
-    # know about a parameter it never needed.
+    than silently persisted.
+
+    `headers`, when given, is sent as extra request headers for this
+    one call. Added for agents/basic_auth/agent.py's Authorization-
+    header credential attempts — same one-shot, never-persisted
+    pattern as `cookies` above."""
+    # cookies/headers only passed through when actually given — several
+    # existing tests patch requests.get with a fake that doesn't accept
+    # those kwargs at all; omitting them when unused keeps those passing
+    # unchanged instead of requiring every call site/fake to know about
+    # a parameter it never needed.
     kwargs = {"timeout": timeout, "allow_redirects": False, "stream": True}
     if cookies is not None:
         kwargs["cookies"] = cookies
+    if headers is not None:
+        kwargs["headers"] = headers
     response = requests.get(url, **kwargs)
     response._bounded_bytes = _read_capped(response, _MAX_RESPONSE_BYTES)
     return response
@@ -396,10 +412,10 @@ class RealScopedExecutor(ScopedExecutor):
     # http_get() / crawl() — web surface (FR-2)
     # ------------------------------------------------------------------
 
-    def http_get(self, url: str, cookies: dict | None = None) -> dict:
+    def http_get(self, url: str, cookies: dict | None = None, headers: dict | None = None) -> dict:
         self._guard_url(url)
         try:
-            response = _bounded_get(url, self._http_timeout, cookies=cookies)
+            response = _bounded_get(url, self._http_timeout, cookies=cookies, headers=headers)
         except requests.RequestException as exc:
             return {"status": 0, "headers": {}, "body": "", "error": str(exc)}
 

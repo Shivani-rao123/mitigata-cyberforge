@@ -358,6 +358,82 @@ def test_scan_route_chains_a_binary_credential_into_an_uncrawled_conventional_lo
     assert "cartlab:B1na_917" in html
 
 
+def test_header_auth_does_not_run_through_the_dashboard_when_llm_is_off(monkeypatch):
+    """webui.app._apply_credential_chaining()'s header-auth pass is
+    fail-CLOSED, same as core/pipeline.py's: with LLM_ENABLED False
+    (the default), no Authorization-header attempt happens at all,
+    even with a real credential_pair_found and a 401 endpoint present."""
+    import common.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_ENABLED", False)
+
+    def _finding(finding_type, **kwargs):
+        return FindingOut(
+            finding_type=finding_type,
+            description=kwargs.get("description", "d"),
+            host=kwargs.get("host"),
+            evidence=Evidence(kind="k", summary=kwargs.get("summary", "s"), raw_ref=kwargs.get("raw_ref")),
+        )
+
+    network_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[],
+        follow_up_jobs=[
+            {"agent": "web", "target": "10.10.10.5:8085", "context": {}},
+            {"agent": "binary", "target": "http://10.10.10.5:8085/agent.bin", "context": {}},
+        ],
+    )
+    web_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[
+            _finding(
+                "sensitive_endpoint_found",
+                description="Sensitive endpoint /api/data responded with HTTP 401",
+                host="10.10.10.5",
+                summary="GET http://10.10.10.5:8085/api/data -> 401",
+            )
+        ],
+    )
+    binary_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[
+            _finding(
+                "credential_pair_found",
+                description="Username/password pair found hardcoded together in agent.bin",
+                summary="username=svc, password=r3**",
+                raw_ref="svc:r3al_pw",
+            )
+        ],
+    )
+
+    get_calls = []
+
+    def _http_get_fn(url, headers=None):
+        get_calls.append((url, headers))
+        return {"status": 401, "headers": {}, "body": ""}
+
+    with (
+        patch("core.orchestrator.run_network_agent", return_value=network_result),
+        patch("core.orchestrator.run_web_agent", return_value=web_result),
+        patch("core.orchestrator.run_binary_agent", return_value=binary_result),
+        patch("webui.app.RealScopedExecutor") as mock_executor_cls,
+    ):
+        from tests.mock_executor import MockScopedExecutor
+
+        mock_executor_cls.return_value = MockScopedExecutor(http_get_fn=_http_get_fn)
+
+        with app.test_client() as c:
+            resp = c.post("/scan", data={"target": "10.10.10.5", "scope": "10.10.10.5/32"})
+
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "header_auth_confirmed" not in html
+    assert all(headers is None for _url, headers in get_calls)
+
+
 def test_webui_app_module_does_not_import_the_old_sequential_chain():
     """run_full_chain (webui/orchestrate.py) was the pre-FR-4 dashboard
     path. It must stay importable (its own tests still cover it) but

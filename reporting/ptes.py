@@ -55,6 +55,13 @@ _PHASE_BY_FINDING_TYPE: dict[str, str] = {
     # successful compromise (same reason confirmed default_creds_found
     # lands here), not merely evidence a weakness exists.
     "ctf_flag_found": "Exploitation",
+    # agents/basic_auth/agent.py only ever EMITS this finding_type once
+    # a header-auth attempt already got past the original 401/403 (see
+    # its own docstring) — unlike default_creds_found, there's no
+    # earlier "merely a candidate" state for this one to start in, so
+    # it goes straight to Exploitation unconditionally, no
+    # _STATUS_OVERRIDE needed.
+    "header_auth_confirmed": "Exploitation",
 }
 
 # finding_types that are purely operational commentary about how the

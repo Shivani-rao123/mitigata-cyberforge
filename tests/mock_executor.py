@@ -80,16 +80,23 @@ class MockScopedExecutor(ScopedExecutor):
         with open(FIXTURES_DIR / "sample_nmap_scan.json") as f:
             return json.load(f)
 
-    def http_get(self, url: str, cookies: dict | None = None) -> dict:
+    def http_get(self, url: str, cookies: dict | None = None, headers: dict | None = None) -> dict:
         if self._http_get_fn is not None:
-            # Only pass `cookies` through when a caller actually supplied
-            # it — keeps every existing single-arg `http_get_fn` (the
-            # overwhelming majority of tests) working unchanged; a test
-            # that specifically wants to see the cookies a caller sent
-            # (e.g. the credential-chaining authenticated re-fetch) can
-            # define `http_get_fn(url, cookies)` and opt in.
+            # Only pass `cookies`/`headers` through when a caller
+            # actually supplied them — keeps every existing single-arg
+            # `http_get_fn` (the overwhelming majority of tests) working
+            # unchanged; a test that specifically wants to see what a
+            # caller sent (e.g. the credential-chaining authenticated
+            # re-fetch, or agents/basic_auth/agent.py's header-auth
+            # attempt) defines a matching `http_get_fn(url, cookies=...)`
+            # / `http_get_fn(url, headers=...)` and opts in via kwargs.
+            kwargs = {}
             if cookies is not None:
-                return self._http_get_fn(url, cookies)
+                kwargs["cookies"] = cookies
+            if headers is not None:
+                kwargs["headers"] = headers
+            if kwargs:
+                return self._http_get_fn(url, **kwargs)
             return self._http_get_fn(url)
         if self._http_result is not None:
             return self._http_result
