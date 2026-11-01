@@ -271,6 +271,93 @@ def test_categorize_chain_buckets_findings_by_category_not_by_stage():
     assert [h.ip for h in categories["live_hosts"]] == ["10.10.10.5"]
 
 
+def test_scan_route_chains_a_binary_credential_into_an_uncrawled_conventional_login_path():
+    """Direct regression for the real lab-run failure report: a scan
+    run through THIS route (the dashboard) produced a correctly
+    extracted credential_pair_found finding but no login attempt and
+    no flag, because this route has no verification step at all by
+    design. webui.app._apply_credential_chaining() is the fix -- it
+    must fire here even though /scan never touches core/pipeline.py or
+    a database."""
+
+    def _finding(finding_type, **kwargs):
+        return FindingOut(
+            finding_type=finding_type, description=kwargs.get("description", "d"),
+            host=kwargs.get("host"),
+            evidence=Evidence(
+                kind="k", summary=kwargs.get("summary", "s"), raw_ref=kwargs.get("raw_ref")
+            ),
+        )
+
+    network_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[],
+        follow_up_jobs=[
+            {"agent": "web", "target": "10.152.241.236:8085", "context": {}},
+            {"agent": "binary", "target": "http://10.152.241.236:8085/agent.bin", "context": {}},
+        ],
+    )
+    # A login form the crawler DID find, unrelated to the real creds --
+    # forces _apply_credential_chaining to fall through to the
+    # conventional-path guesswork, same as the real failed scan.
+    web_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[
+            _finding(
+                "default_creds_found",
+                description="Login form found at http://10.152.241.236:8085/admin (action=/admin)",
+                host="10.152.241.236",
+                summary="GET http://10.152.241.236:8085/admin -> 200, form fields: ['password', 'username']",
+            )
+        ],
+    )
+    binary_result = JobResult(
+        job_id="x",
+        status="completed",
+        findings=[
+            _finding(
+                "credential_pair_found",
+                description="Username/password pair found hardcoded together in agent.bin",
+                summary="username=cartlab, password=B1**",
+                raw_ref="cartlab:B1na_917",
+            )
+        ],
+    )
+
+    def _http_post_fn(url, data):
+        if url == "http://10.152.241.236:8085/admin":
+            return {"status": 302, "headers": {"Location": "/admin?error=1"}, "body": ""}
+        if url == "http://10.152.241.236:8085/lab/login" and data == {
+            "username": "cartlab",
+            "password": "B1na_917",
+        }:
+            return {"status": 302, "headers": {"Location": "/lab/dashboard"}, "body": "", "cookies": {}}
+        return {"status": 404, "headers": {}, "body": ""}
+
+    with (
+        patch("core.orchestrator.run_network_agent", return_value=network_result),
+        patch("core.orchestrator.run_web_agent", return_value=web_result),
+        patch("core.orchestrator.run_binary_agent", return_value=binary_result),
+        patch("webui.app.RealScopedExecutor") as mock_executor_cls,
+    ):
+        from tests.mock_executor import MockScopedExecutor
+
+        mock_executor_cls.return_value = MockScopedExecutor(http_post_fn=_http_post_fn)
+
+        with app.test_client() as c:
+            resp = c.post(
+                "/scan", data={"target": "10.152.241.236", "scope": "10.152.241.236/32"}
+            )
+
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "lab/login" in html
+    assert "not discovered by crawling" in html
+    assert "cartlab:B1na_917" in html
+
+
 def test_webui_app_module_does_not_import_the_old_sequential_chain():
     """run_full_chain (webui/orchestrate.py) was the pre-FR-4 dashboard
     path. It must stay importable (its own tests still cover it) but

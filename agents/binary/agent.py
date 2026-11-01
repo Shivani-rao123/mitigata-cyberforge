@@ -167,10 +167,23 @@ def run(
                 ],
             )
 
+    # Computed first (not after _check_secrets) so its username/password
+    # values can be excluded from the separate secret-scanning checks —
+    # a real run surfaced this exact noise: the SAME password string got
+    # reported twice, once correctly paired here and again standalone
+    # via gitleaks's generic-api-key rule (or the regex fallback's
+    # generic_secret_assignment). Not wrong, just redundant — one
+    # credential_pair_found finding already says everything the
+    # standalone hardcoded_secret would.
+    credential_pairs = _check_credential_pairs(engine, path)
+    exclude_values = {
+        value for f in credential_pairs for value in (f.evidence.raw_ref or "").split(":", 1) if value
+    }
+
     findings: list[FindingOut] = []
-    findings.extend(_check_secrets(engine, path))
+    findings.extend(_check_secrets(engine, path, exclude_values=exclude_values))
     findings.extend(_check_unsafe_functions(engine, path))
-    findings.extend(_check_credential_pairs(engine, path))
+    findings.extend(credential_pairs)
 
     return JobResult(job_id=job.job_id, status="completed", findings=findings)
 
@@ -214,7 +227,9 @@ def _validate_path(target: str) -> str:
     return str(resolved)
 
 
-def _check_secrets(engine: ToolEngine, path: str) -> list[FindingOut]:
+def _check_secrets(
+    engine: ToolEngine, path: str, exclude_values: set[str] | None = None
+) -> list[FindingOut]:
     """Prefers gitleaks; falls back to the regex-based check below if
     gitleaks isn't installed/configured on this machine. A gitleaks
     failure for any OTHER reason (e.g. it ran but crashed, or produced
@@ -224,14 +239,20 @@ def _check_secrets(engine: ToolEngine, path: str) -> list[FindingOut]:
     behind a much weaker check and make "gitleaks is broken" look
     identical to "gitleaks found nothing", which is exactly the kind of
     false-negative this project's Verify/False-alarm scoring targets
-    want to avoid."""
+    want to avoid.
+
+    `exclude_values`, when given, skips a matched secret whose value is
+    already accounted for by _check_credential_pairs's own finding —
+    see run()'s own comment for why."""
     try:
-        return _check_secrets_gitleaks(engine, path)
+        return _check_secrets_gitleaks(engine, path, exclude_values)
     except (ToolNotInstalled, ToolNotConfigured):
-        return _check_secrets_regex(engine, path)
+        return _check_secrets_regex(engine, path, exclude_values)
 
 
-def _check_secrets_gitleaks(engine: ToolEngine, path: str) -> list[FindingOut]:
+def _check_secrets_gitleaks(
+    engine: ToolEngine, path: str, exclude_values: set[str] | None = None
+) -> list[FindingOut]:
     """Runs gitleaks against a `strings` extraction of `path`, not the raw
     file itself.
 
@@ -256,10 +277,13 @@ def _check_secrets_gitleaks(engine: ToolEngine, path: str) -> list[FindingOut]:
     raw = engine.run("gitleaks", target=str(strings_path))
     leaks = engine.parse("gitleaks", raw)
 
+    exclude_values = exclude_values or set()
     findings: list[FindingOut] = []
     seen: set[str] = set()  # avoid duplicate findings for the same matched secret
 
     for leak in leaks:
+        if leak["secret"] in exclude_values:
+            continue
         dedup_key = f"{leak['rule']}:{leak['secret']}"
         if dedup_key in seen:
             continue
@@ -284,11 +308,14 @@ def _check_secrets_gitleaks(engine: ToolEngine, path: str) -> list[FindingOut]:
     return findings
 
 
-def _check_secrets_regex(engine: ToolEngine, path: str) -> list[FindingOut]:
+def _check_secrets_regex(
+    engine: ToolEngine, path: str, exclude_values: set[str] | None = None
+) -> list[FindingOut]:
     raw = engine.run("strings", target=path)
     parsed = engine.parse("strings", raw)
     strings_list = parsed.get("strings", [])
 
+    exclude_values = exclude_values or set()
     findings: list[FindingOut] = []
     seen: set[str] = set()  # avoid duplicate findings for the same matched text
 
@@ -297,6 +324,12 @@ def _check_secrets_regex(engine: ToolEngine, path: str) -> list[FindingOut]:
             match = pattern.search(line)
             if match:
                 matched_text = match.group(0)
+                # Membership check, not equality: this regex's matched
+                # text is the whole "key=value"-shaped assignment (e.g.
+                # password="S3cr3t!"), not the bare value
+                # _check_credential_pairs already captured on its own.
+                if any(value and value in matched_text for value in exclude_values):
+                    continue
                 dedup_key = f"{secret_type}:{matched_text}"
                 if dedup_key in seen:
                     continue

@@ -32,9 +32,12 @@ from __future__ import annotations
 
 from flask import Flask, render_template, request
 
+from agents.web.agent import _to_base_url
 from core.orchestrator import run_target
 from core.scoped_executor import RealScopedExecutor
 from scope.manager import ScopeManager
+from verification.credential_chaining import try_credentials_against_conventional_paths
+from verification.verifier import verify_finding
 
 app = Flask(__name__)
 
@@ -99,6 +102,72 @@ ENDPOINT_FINDING_TYPES = {"sensitive_endpoint_found", "js_endpoint_found", "dire
 # one finding that actually matters; without this split, those notes
 # bury everything else.
 OPERATIONAL_NOTE_TYPES = {"redirect_followed", "crawler_fallback", "duplicate_binary_skipped"}
+
+
+def _apply_credential_chaining(chain, executor) -> None:
+    """Dashboard-only counterpart to core/pipeline.py's own pass 2 /
+    pass 2.5 (see that module's docstring for the full rationale) —
+    this is the SAME gap a real lab run surfaced: a scan run through
+    this dashboard has no verification step at all by design (see this
+    module's own docstring), so a binary's credential_pair_found
+    finding never got tried against anything here, even after
+    core/pipeline.py learned to do it. Rather than bolting a full
+    verification pass onto every finding type (a much bigger behavior
+    change to a route that intentionally stays a thin, DB-less demo
+    layer), this only does the one thing the user is actually asking
+    for: take whatever credential(s) a binary stage found and try
+    them, in place, against (a) any default_creds_found login form the
+    web agent already crawled, then (b) if that didn't confirm
+    anything, a short list of conventional login paths. Mutates
+    `chain.stages[*].result.findings` in place — FindingOut/Evidence
+    are plain pydantic models, not frozen, so updating evidence.summary
+    or appending a new FindingOut is safe and categorize_chain() below
+    picks either up exactly like any other finding."""
+    extra_credentials: list[tuple[str, str]] = []
+    for stage in chain.stages:
+        if stage.result is None:
+            continue
+        for finding in stage.result.findings:
+            if finding.finding_type != "credential_pair_found" or not finding.evidence.raw_ref:
+                continue
+            username, _, password = finding.evidence.raw_ref.partition(":")
+            if username and password:
+                extra_credentials.append((username, password))
+
+    if not extra_credentials:
+        return
+
+    any_default_creds_confirmed = False
+    for stage in chain.stages:
+        if stage.result is None:
+            continue
+        for finding in stage.result.findings:
+            if finding.finding_type != "default_creds_found":
+                continue
+            verdict = verify_finding(
+                {
+                    "finding_type": finding.finding_type,
+                    "description": finding.description,
+                    "evidence_summary": finding.evidence.summary,
+                },
+                executor,
+                extra_credentials=extra_credentials,
+            )
+            if verdict["status"] == "confirmed":
+                any_default_creds_confirmed = True
+                finding.evidence.summary = verdict["evidence_summary"]
+
+    if any_default_creds_confirmed:
+        return
+
+    for stage in chain.stages:
+        if stage.agent != "web" or stage.result is None:
+            continue
+        base_url = _to_base_url(stage.target)
+        new_findings = try_credentials_against_conventional_paths(executor, base_url, extra_credentials)
+        if new_findings:
+            stage.result.findings.extend(new_findings)
+            break  # one confirmed login across every host checked is enough
 
 
 def categorize_chain(chain) -> dict:
@@ -189,6 +258,8 @@ def scan():
         )
     except Exception as exc:  # noqa: BLE001 — show it in the UI, not a stack trace
         return render_template("index.html", error=f"Could not start scan: {exc}")
+
+    _apply_credential_chaining(chain, executor)
 
     return render_template("results.html", chain=chain, target=target, categories=categorize_chain(chain))
 
