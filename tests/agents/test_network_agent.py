@@ -101,6 +101,7 @@ def test_llm_enabled_can_filter_down_the_rule_based_candidates(monkeypatch):
     import common.llm as llm_module
 
     monkeypatch.setattr(llm_module, "LLM_ENABLED", True)
+    monkeypatch.setattr(llm_module, "_API_KEY", "test-key")
 
     fake_module = types.ModuleType("openai")
 

@@ -41,6 +41,11 @@ def _fake_chat_completion(text):
 
 
 def _install_fake_openai(monkeypatch, response_text=None, raise_exc=None):
+    # _API_KEY is read once at module-import time from OPENCODE_API_KEY/
+    # OPENAI_API_KEY — patch it directly so these tests don't depend on
+    # whatever's (or isn't) actually in the environment they run in.
+    monkeypatch.setattr(llm_module, "_API_KEY", "test-key")
+
     fake_module = types.ModuleType("openai")
 
     class _FakeOpenAI:
@@ -65,8 +70,15 @@ def test_empty_candidates_returns_none_even_when_enabled(monkeypatch):
     assert choose_follow_ups(JOB, FINDINGS, []) is None
 
 
+def test_no_api_key_returns_none_without_a_network_call(monkeypatch):
+    monkeypatch.setattr(llm_module, "LLM_ENABLED", True)
+    monkeypatch.setattr(llm_module, "_API_KEY", None)
+    assert choose_follow_ups(JOB, FINDINGS, CANDIDATES) is None
+
+
 def test_openai_not_installed_returns_none_gracefully(monkeypatch):
     monkeypatch.setattr(llm_module, "LLM_ENABLED", True)
+    monkeypatch.setattr(llm_module, "_API_KEY", "test-key")
     monkeypatch.setitem(sys.modules, "openai", None)  # simulates "not installed"
     assert choose_follow_ups(JOB, FINDINGS, CANDIDATES) is None
 

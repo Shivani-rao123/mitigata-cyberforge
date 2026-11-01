@@ -38,8 +38,19 @@ candidates unchanged", never as "run nothing" — a flaky or misconfigured
 LLM call should degrade this feature back to its own off-state, not
 degrade the scan itself.
 
-Reads OPENAI_API_KEY (and the two CART_LLM_* settings below) from a
-.env file in the project root if one exists (via python-dotenv) —
+Talks to whatever OpenAI-compatible endpoint is configured via
+CART_LLM_BASE_URL — defaults to OpenCode's console inference gateway
+(https://opencode.ai/inference/openai/v1, which serves an OpenAI
+Chat Completions-shaped API — see
+https://opencode.ai/v2/docs/console/api/inference/), authenticated with
+OPENCODE_API_KEY (falling back to OPENAI_API_KEY if that's what's set
+instead — either works, whichever env var actually has a value wins).
+Still just the `openai` Python SDK underneath; only the base_url/key
+differ from talking to OpenAI directly, so switching back to the real
+OpenAI API later is a one-line env change, not a code change.
+
+Reads all of the above (plus the two CART_LLM_* settings below) from
+a .env file in the project root if one exists (via python-dotenv) —
 see .env.example for the template. A real .env is gitignored; nothing
 here ever commits a key.
 """
@@ -54,8 +65,8 @@ try:
 
     load_dotenv()
 except ImportError:
-    # python-dotenv not installed — fine, just means OPENAI_API_KEY/
-    # CART_LLM_* must already be set some other way (shell env,
+    # python-dotenv not installed — fine, just means the API key/
+    # CART_LLM_* vars must already be set some other way (shell env,
     # docker-compose `environment:`, etc). Doesn't affect LLM_ENABLED's
     # own default of False either way.
     pass
@@ -64,11 +75,27 @@ from common.contracts import FindingOut, Job
 
 LLM_ENABLED = os.environ.get("CART_LLM_FOLLOWUPS", "").strip().lower() in ("1", "true", "yes")
 
+# OpenCode's console inference gateway by default (OpenAI-compatible
+# Chat Completions path) — override via CART_LLM_BASE_URL to point at
+# the real OpenAI API (https://api.openai.com/v1) or any other
+# OpenAI-compatible provider instead, with no code change.
+_BASE_URL = os.environ.get("CART_LLM_BASE_URL", "https://opencode.ai/inference/openai/v1")
+
+# Whichever of these actually has a value wins — OPENCODE_API_KEY
+# first since that's the key actually in use, OPENAI_API_KEY as a
+# fallback for anyone who switches _BASE_URL back to OpenAI directly.
+_API_KEY = os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
 # A small, fast model is plenty for "rank/filter this short list of
 # candidates" — this is not the kind of task that benefits from a
 # larger model, and keeping it small keeps latency and cost down for
-# something that runs on every single agent stage.
-_MODEL = os.environ.get("CART_LLM_MODEL", "gpt-4o-mini")
+# something that runs on every single agent stage. "kimi-k3" is one of
+# OpenCode's Chat-Completions-compatible paid models (see the
+# inference docs linked above) — free-tier models return 403 outside
+# OpenCode's own CLI, so this must be a model your OpenCode account
+# actually has paid access/allowance for. Override with CART_LLM_MODEL
+# if "kimi-k3" isn't available on your account.
+_MODEL = os.environ.get("CART_LLM_MODEL", "kimi-k3")
 
 # An LLM call that hangs would otherwise stall a scan stage
 # indefinitely — nmap/requests calls elsewhere in this project all
@@ -106,6 +133,12 @@ def choose_follow_ups(
     if not LLM_ENABLED or not candidates:
         return None
 
+    if not _API_KEY:
+        # No OPENCODE_API_KEY/OPENAI_API_KEY set — same "behave as if
+        # the feature were off" fallback, just caught earlier so a
+        # missing key doesn't even need a network round-trip to fail.
+        return None
+
     try:
         from openai import OpenAI
     except ImportError:
@@ -115,7 +148,7 @@ def choose_follow_ups(
         return None
 
     try:
-        client = OpenAI(timeout=_TIMEOUT_SECONDS)
+        client = OpenAI(api_key=_API_KEY, base_url=_BASE_URL, timeout=_TIMEOUT_SECONDS)
         findings_summary = [
             {"finding_type": f.finding_type, "description": f.description} for f in findings
         ]
