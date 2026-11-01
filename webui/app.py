@@ -36,6 +36,7 @@ from agents.web.agent import _to_base_url
 from core.orchestrator import run_target
 from core.scoped_executor import RealScopedExecutor
 from scope.manager import ScopeManager
+from verification.authenticated_exploration import collect_candidate_endpoints
 from verification.credential_chaining import try_credentials_against_conventional_paths
 from verification.verifier import verify_finding
 
@@ -124,9 +125,11 @@ def _apply_credential_chaining(chain, executor) -> None:
     or appending a new FindingOut is safe and categorize_chain() below
     picks either up exactly like any other finding."""
     extra_credentials: list[tuple[str, str]] = []
+    all_findings = []
     for stage in chain.stages:
         if stage.result is None:
             continue
+        all_findings.extend(stage.result.findings)
         for finding in stage.result.findings:
             if finding.finding_type != "credential_pair_found" or not finding.evidence.raw_ref:
                 continue
@@ -136,6 +139,12 @@ def _apply_credential_chaining(chain, executor) -> None:
 
     if not extra_credentials:
         return
+
+    # Every endpoint this scan discovered (sensitive_endpoint_found /
+    # directory_listing_enabled) — once a login confirms below, each of
+    # these gets re-fetched with the new session cookies too, not just
+    # the site root. See verification/authenticated_exploration.py.
+    discovered_endpoints = collect_candidate_endpoints(all_findings)
 
     any_default_creds_confirmed = False
     for stage in chain.stages:
@@ -152,6 +161,7 @@ def _apply_credential_chaining(chain, executor) -> None:
                 },
                 executor,
                 extra_credentials=extra_credentials,
+                discovered_endpoints=discovered_endpoints,
             )
             if verdict["status"] == "confirmed":
                 any_default_creds_confirmed = True
@@ -164,7 +174,9 @@ def _apply_credential_chaining(chain, executor) -> None:
         if stage.agent != "web" or stage.result is None:
             continue
         base_url = _to_base_url(stage.target)
-        new_findings = try_credentials_against_conventional_paths(executor, base_url, extra_credentials)
+        new_findings = try_credentials_against_conventional_paths(
+            executor, base_url, extra_credentials, discovered_endpoints=discovered_endpoints
+        )
         if new_findings:
             stage.result.findings.extend(new_findings)
             break  # one confirmed login across every host checked is enough

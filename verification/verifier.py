@@ -31,6 +31,10 @@ from urllib.parse import urljoin, urlparse
 
 from common.flag_patterns import FLAG_PATTERNS
 from core.scoped_executor import ScopedExecutor
+from verification.authenticated_exploration import (
+    explore_authenticated_endpoints,
+    summarize_endpoint_access,
+)
 
 # Mirrors agents/web/agent.py's own PASSWORD_FIELD_NAMES exactly — kept
 # as a separate copy rather than importing from agents/web/agent.py so
@@ -195,7 +199,10 @@ def _check_for_flag_after_login(
 
 
 def _verify_default_creds_found(
-    finding: dict, executor: ScopedExecutor, extra_credentials: list[tuple[str, str]] | None = None
+    finding: dict,
+    executor: ScopedExecutor,
+    extra_credentials: list[tuple[str, str]] | None = None,
+    discovered_endpoints: list[tuple[str, int | None]] | None = None,
 ) -> dict:
     try:
         login_page_url, action_url, field_names = _parse_login_form_finding(finding)
@@ -224,9 +231,28 @@ def _verify_default_creds_found(
             continue
         if _looks_like_successful_login(response, login_page_url):
             evidence_summary = f"POST {action_url} with {username}:{password} -> {response['status']}"
-            flag = _check_for_flag_after_login(executor, login_page_url, response.get("cookies") or {})
+            cookies = response.get("cookies") or {}
+
+            # Explore every endpoint THIS SAME RUN already discovered
+            # (sensitive_endpoint_found / directory_listing_enabled —
+            # see verification/authenticated_exploration.py's own
+            # docstring) now that there's a session to use, plus the
+            # site root as an always-available fallback (the one check
+            # this used to be limited to). Supersedes a bare
+            # _check_for_flag_after_login() call here — that function
+            # is kept as-is for other callers (e.g.
+            # verification/credential_chaining.py) that only have the
+            # root to check.
+            site_root = f"{urlparse(login_page_url).scheme}://{urlparse(login_page_url).netloc}/"
+            endpoint_results = explore_authenticated_endpoints(
+                executor, cookies, list(discovered_endpoints or []) + [(site_root, None)]
+            )
+            exploration_summary, flag = summarize_endpoint_access(endpoint_results)
+            if exploration_summary:
+                evidence_summary += f"; {exploration_summary}"
             if flag:
                 evidence_summary += f"; authenticated access revealed flag: {flag}"
+
             return {"status": "confirmed", "evidence_summary": evidence_summary}
 
     return {
@@ -238,7 +264,10 @@ def _verify_default_creds_found(
 
 
 def verify_finding(
-    finding: dict, executor: ScopedExecutor, extra_credentials: list[tuple[str, str]] | None = None
+    finding: dict,
+    executor: ScopedExecutor,
+    extra_credentials: list[tuple[str, str]] | None = None,
+    discovered_endpoints: list[tuple[str, int | None]] | None = None,
 ) -> dict:
     """
     Verify one finding. `finding` is a dict shaped like a core/db.py
@@ -255,8 +284,19 @@ def verify_finding(
     — tried against a default_creds_found candidate before the small
     built-in weak-credential list. Ignored for every other finding_type,
     same as every other verify_finding parameter.
+
+    `discovered_endpoints`, when given, is a list of (url, pre_auth_
+    status) pairs — every sensitive_endpoint_found/directory_listing_
+    enabled finding any stage in the same run produced (core/pipeline.py
+    and webui/app.py both build this via verification/
+    authenticated_exploration.py's collect_candidate_endpoints()). Once
+    a login succeeds, each of these is re-fetched with the new session
+    cookies — see _verify_default_creds_found for why, and
+    verification/authenticated_exploration.py's own docstring for the
+    requirement this answers ("explore the accessible application
+    endpoints... using the authenticated session").
     """
     if finding.get("finding_type") == "default_creds_found":
-        return _verify_default_creds_found(finding, executor, extra_credentials)
+        return _verify_default_creds_found(finding, executor, extra_credentials, discovered_endpoints)
 
     return {"status": "confirmed", "evidence_summary": None}

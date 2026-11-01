@@ -26,6 +26,7 @@ from core.orchestrator import OrchestrationResult, StageResult, run_target
 from core.scoped_executor import ScopedExecutor
 from reporting.ptes import ptes_phase_for
 from reporting.report_generator import build_attack_path
+from verification.authenticated_exploration import collect_candidate_endpoints
 from verification.credential_chaining import try_credentials_against_conventional_paths
 from verification.verifier import verify_finding
 
@@ -98,15 +99,25 @@ def run_and_persist(
     # how these get used (tried before the generic weak-credential
     # list).
     extra_credentials: list[tuple[str, str]] = []
+    all_findings: list[FindingOut] = []
     for stage in outcome.stages:
         if stage.result is None:
             continue
+        all_findings.extend(stage.result.findings)
         for finding in stage.result.findings:
             if finding.finding_type != "credential_pair_found" or not finding.evidence.raw_ref:
                 continue
             username, _, password = finding.evidence.raw_ref.partition(":")
             if username and password:
                 extra_credentials.append((username, password))
+
+    # Every endpoint this whole run discovered (sensitive_endpoint_found /
+    # directory_listing_enabled, pooled across every stage the same way
+    # extra_credentials is above) — passed into verify_finding() and the
+    # pass-2.5 fallback below so a successful login explores everything
+    # already known about this target, not just its own site root. See
+    # verification/authenticated_exploration.py's own docstring.
+    discovered_endpoints = collect_candidate_endpoints(all_findings)
 
     # Pass 2: persist every finding (against whichever host it names,
     # creating that host row on the fly if pass 1 didn't already),
@@ -146,6 +157,7 @@ def run_and_persist(
                 },
                 executor,
                 extra_credentials=extra_credentials,
+                discovered_endpoints=discovered_endpoints,
             )
             final_status = verdict["status"]
             if final_status != "flagged":
@@ -176,7 +188,9 @@ def run_and_persist(
             if stage.agent != "web" or stage.result is None:
                 continue
             base_url = _to_base_url(stage.target)
-            new_findings = try_credentials_against_conventional_paths(executor, base_url, extra_credentials)
+            new_findings = try_credentials_against_conventional_paths(
+                executor, base_url, extra_credentials, discovered_endpoints=discovered_endpoints
+            )
             for finding in new_findings:
                 host_key = finding.host or _host_key_for_finding(finding, stage)
                 host_id = host_ip_to_id.get(host_key)

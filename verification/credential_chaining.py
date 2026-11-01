@@ -34,7 +34,8 @@ from urllib.parse import urlparse
 
 from common.contracts import Evidence, FindingOut
 from core.scoped_executor import ScopedExecutor
-from verification.verifier import _build_payload, _check_for_flag_after_login, _looks_like_successful_login
+from verification.authenticated_exploration import explore_authenticated_endpoints, summarize_endpoint_access
+from verification.verifier import _build_payload, _looks_like_successful_login
 
 # A short, deliberately small list — this is confirming a specific,
 # already-discovered credential actually logs in somewhere, not probing
@@ -59,6 +60,7 @@ def try_credentials_against_conventional_paths(
     executor: ScopedExecutor,
     base_url: str,
     credentials: list[tuple[str, str]],
+    discovered_endpoints: list[tuple[str, int | None]] | None = None,
 ) -> list[FindingOut]:
     """
     Tries every (username, password) in `credentials` against every
@@ -68,6 +70,15 @@ def try_credentials_against_conventional_paths(
     confirmed-style default_creds_found finding (plus a flag, if the
     post-login check turns one up) — empty if nothing worked, or if
     `credentials` is empty (nothing to try).
+
+    `discovered_endpoints`, when given, is the same (url, pre_auth_
+    status) list verification/verifier.py's verify_finding() accepts —
+    every sensitive_endpoint_found/directory_listing_enabled finding
+    the same run produced. Once a login succeeds here, each of these
+    is re-fetched with the new session cookies too (see
+    verification/authenticated_exploration.py), not just the site
+    root — the guessed-path login deserves the same "explore what the
+    session can now reach" follow-up a crawled-form login gets.
 
     Callers (core/pipeline.py, webui/app.py) decide when to call this
     — typically only when a run produced at least one
@@ -99,7 +110,13 @@ def try_credentials_against_conventional_paths(
                     f"POST {login_url} with {username}:{password} -> {response['status']} "
                     "(conventional login path, not discovered by crawling)"
                 )
-                flag = _check_for_flag_after_login(executor, login_url, response.get("cookies") or {})
+                cookies = response.get("cookies") or {}
+                endpoint_results = explore_authenticated_endpoints(
+                    executor, cookies, list(discovered_endpoints or []) + [(base_url.rstrip("/") + "/", None)]
+                )
+                exploration_summary, flag = summarize_endpoint_access(endpoint_results)
+                if exploration_summary:
+                    evidence_summary += f"; {exploration_summary}"
                 if flag:
                     evidence_summary += f"; authenticated access revealed flag: {flag}"
 
